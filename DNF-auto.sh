@@ -1,10 +1,10 @@
 #!/bin/bash
 #
-#       VERSION 58 - Scripted uninstaller, external config, and hardening
-# This script installs the current architecture with a safe uninstaller,
+#       VERSION 59 - Fedora/DNF polish, scripted uninstaller, external config, and hardening
+# This script installs the DNF auto-helper with a safe uninstaller,
 # an external configuration file, and improved systemd hardening.
-# It replaces 'sudo' with 'pkexec' in the Python script to ensure
-# zypper refresh/dry-run is not instantly blocked by pam_kwallet5.
+# It replaces 'sudo' with 'pkexec' in the Python script so dnf refresh/preview
+# can run under Polkit without spurious password prompts or failures.
 #
 # MUST be run with sudo or as root.
 
@@ -239,12 +239,12 @@ SNOOZE_MEDIUM_HOURS=4
 SNOOZE_LONG_HOURS=24
 
 # ---------------------------------------------------------------------
-# Zypper lock handling and downloader behaviour
+# Package-manager lock handling and downloader behaviour
 # ---------------------------------------------------------------------
 
 # LOCK_RETRY_MAX_ATTEMPTS
 # How many times the "Ready to install" helper should retry when
-# another zypper/YaST instance holds the system management lock
+# another DNF/PackageKit instance holds the system management lock
 # before giving up and showing a message. Each attempt waits a
 # little longer than the previous one.
 LOCK_RETRY_MAX_ATTEMPTS=10
@@ -257,9 +257,8 @@ LOCK_RETRY_INITIAL_DELAY_SECONDS=1
 
 # LOCK_REMINDER_ENABLED
 # When "true", the user-space notifier shows a small desktop notification
-# whenever zypper/libzypp is locked by another process (YaST, another
-# zypper, systemd-zypp-refresh, etc.), and will repeat this reminder on
-# each notifier run while the lock is present.
+# whenever DNF/PackageKit is locked by another process, and will repeat this
+# reminder on each notifier run while the lock is present.
 #
 # When "false", lock situations are still logged to
 # ~/.local/share/zypper-notify/notifier-detailed.log and reflected in
@@ -290,26 +289,25 @@ UPDATES_READY_REMINDER_REPEAT_ENABLED=true
 # When "true", the periodic verification/auto-repair service sends a
 # desktop notification to the primary user when it detects and fixes
 # at least one problem. When "false", verification still runs and logs
-# repairs to /var/log/zypper-auto but does not notify on the desktop.
+# repairs to /var/log/dnf-auto but does not notify on the desktop.
 #
 # Valid values: true / false (case-sensitive). Default: true.
 VERIFY_NOTIFY_USER_ENABLED=true
 
 # DOWNLOADER_DOWNLOAD_MODE
 # Controls how the background downloader behaves (value is case-sensitive):
-#   full        - (default) run "zypper dup --download-only" to
-#                 prefetch all packages into the cache.
-#   detect-only - only run "zypper dup --dry-run" to detect whether
+#   full        - (default) run a full "dnf upgrade --downloadonly" pass
+#                 to prefetch all packages into the cache.
+#   detect-only - only run a non-interactive preview to detect whether
 #                 updates are available; no pre-download is done.
 # Any other value is treated as invalid and will be reported in the
 # installer log, then reset to the safe default "full".
 DOWNLOADER_DOWNLOAD_MODE=full
 
 # DUP_EXTRA_FLAGS
-# Extra arguments appended to every "zypper dup" invocation run by this
-# helper, both for the background downloader ("dup --download-only") and
-# the notifier ("dup --dry-run"). This is useful for flags like
-# "--allow-vendor-change" or "--from <repo>".
+# Extra arguments appended to every dnf-based update invocation run by this
+# helper, both for the background downloader and the notifier preview. This
+# is useful for flags like "--refresh" or repo selection switches.
 #
 # IMPORTANT:
 #   - Do NOT include "--non-interactive", "--download-only" or "--dry-run"
@@ -493,7 +491,7 @@ EOF
         local keys_joined
         keys_joined="${missing_keys[*]}"
         local msg
-msg="${CONFIG_FILE} appears to be from an older version (missing keys: ${keys_joined}). Run 'sudo dnf-auto-helper --reset-config' to regenerate it with the latest options."
+            msg="${CONFIG_FILE} appears to be from an older version (missing keys: ${keys_joined}). Run 'sudo dnf-auto-helper --reset-config' to regenerate it with the latest options."
         log_info "$msg"
         CONFIG_WARNINGS+=("$msg")
 
@@ -868,15 +866,15 @@ fi
 
 # Check 7: No old Python processes running
 log_debug "Checking for stale Python processes..."
-if pgrep -f "zypper-notify-updater.py" &>/dev/null; then
-    PROCESS_COUNT=$(pgrep -f "zypper-notify-updater.py" | wc -l)
+if pgrep -f "dnf-notify-updater.py" &>/dev/null; then
+    PROCESS_COUNT=$(pgrep -f "dnf-notify-updater.py" | wc -l)
     if [ $PROCESS_COUNT -gt 1 ]; then
         log_error "⚠ Warning: $PROCESS_COUNT Python notifier processes running (expected 0-1)"
         log_info "  → Attempting to fix: killing stale processes..."
-        pkill -9 -f "zypper-notify-updater.py" >> "${LOG_FILE}" 2>&1
+        pkill -9 -f "dnf-notify-updater.py" >> "${LOG_FILE}" 2>&1
         sleep 1
-        if pgrep -f "zypper-notify-updater.py" &>/dev/null; then
-            NEW_COUNT=$(pgrep -f "zypper-notify-updater.py" | wc -l)
+        if pgrep -f "dnf-notify-updater.py" &>/dev/null; then
+            NEW_COUNT=$(pgrep -f "dnf-notify-updater.py" | wc -l)
             log_info "  ✓ Fixed: Reduced to $NEW_COUNT process(es)"
         else
             log_success "  ✓ Fixed: All stale processes killed"
@@ -922,28 +920,39 @@ else
     log_info "ℹ Status file will be created on first run"
 fi
 
-# Check 11: Stale zypp lock cleanup
-log_debug "[11/12] Checking for stale zypp lock file..."
-if [ -f "/run/zypp.pid" ] || [ -f "/var/run/zypp.pid" ]; then
-    ZYPP_LOCK_FILE="/run/zypp.pid"
-    [ -f "/var/run/zypp.pid" ] && ZYPP_LOCK_FILE="/var/run/zypp.pid"
-    ZYPP_LOCK_PID=$(cat "$ZYPP_LOCK_FILE" 2>/dev/null || echo "")
-    if [ -n "$ZYPP_LOCK_PID" ]; then
-        if ! kill -0 "$ZYPP_LOCK_PID" 2>/dev/null; then
-            log_error "⚠ Warning: Found stale zypp lock at $ZYPP_LOCK_FILE (PID $ZYPP_LOCK_PID is not running)"
+# Check 11: Stale DNF/RPM lock cleanup
+log_debug "[11/12] Checking for stale DNF/RPM lock files..."
+
+# Check dnf.pid for stale locks
+if [ -f "/var/run/dnf.pid" ] || [ -f "/run/dnf.pid" ]; then
+    DNF_LOCK_FILE="/var/run/dnf.pid"
+    [ -f "/run/dnf.pid" ] && DNF_LOCK_FILE="/run/dnf.pid"
+    DNF_LOCK_PID=$(cat "$DNF_LOCK_FILE" 2>/dev/null || echo "")
+    if [ -n "$DNF_LOCK_PID" ]; then
+        if ! kill -0 "$DNF_LOCK_PID" 2>/dev/null; then
+            log_error "⚠ Warning: Found stale dnf lock at $DNF_LOCK_FILE (PID $DNF_LOCK_PID is not running)"
             log_info "  → Attempting to remove stale lock file..."
-            if rm -f "$ZYPP_LOCK_FILE" >> "${LOG_FILE}" 2>&1; then
-                log_success "  ✓ Removed stale zypp lock file"
+            if rm -f "$DNF_LOCK_FILE" >> "${LOG_FILE}" 2>&1; then
+                log_success "  ✓ Removed stale dnf lock file"
             else
-                log_error "  ✗ Failed to remove stale zypp lock file"
+                log_error "  ✗ Failed to remove stale dnf lock file"
                 VERIFICATION_FAILED=1
             fi
         else
-            log_debug "  → zypp lock PID $ZYPP_LOCK_PID is alive; leaving lock in place"
+            log_debug "  → dnf lock PID $DNF_LOCK_PID is alive; leaving lock in place"
         fi
     fi
 else
-    log_debug "No zypp lock file present"
+    log_debug "No dnf lock file present"
+fi
+
+# Check RPM database lock as well (may indicate another package tool is active)
+if [ -f "/var/lib/rpm/.rpm.lock" ] && command -v fuser >/dev/null 2>&1; then
+    if ! fuser "/var/lib/rpm/.rpm.lock" >/dev/null 2>&1; then
+        log_debug "RPM lock file exists but no active owner detected"
+    else
+        log_debug "RPM lock file is currently held by another process; leaving it in place"
+    fi
 fi
 
 # Check 12: Root filesystem free space and cleanup
@@ -993,7 +1002,7 @@ else
     log_error "  → Auto-repair attempted but could not fix all issues"
     log_info "  → Review logs: ${LOG_FILE}"
     if [ "${#CONFIG_WARNINGS[@]:-0}" -gt 0 ]; then
-        log_info "  → Config warnings detected; consider: sudo zypper-auto-helper --reset-config"
+        log_info "  → Config warnings detected; consider: sudo dnf-auto-helper --reset-config"
     fi
     log_info "  → Common fixes:"
     log_info "     - Check systemd permissions: sudo loginctl enable-linger $SUDO_USER"
@@ -1134,7 +1143,7 @@ echo "  dnf-auto-helper Uninstall" | tee -a "${LOG_FILE}"
 echo "scripts/aliases installed by dnf-auto-helper for user $SUDO_USER." | tee -a "${LOG_FILE}"
 echo "The installer script (DNF-auto.sh) and your Soar/Homebrew installs" | tee -a "${LOG_FILE}"
     echo "will be left untouched. It also does NOT remove snapd, Flatpak, Soar," | tee -a "${LOG_FILE}"
-    echo "Homebrew itself, or any zypper configuration such as /etc/zypp/zypper.conf." | tee -a "${LOG_FILE}"
+    echo "Homebrew itself, or any dnf configuration such as /etc/dnf/dnf.conf." | tee -a "${LOG_FILE}"
     echo "" | tee -a "${LOG_FILE}"
 
     # Handle dry-run and non-interactive flags from the CLI dispatcher.
@@ -1142,13 +1151,15 @@ echo "The installer script (DNF-auto.sh) and your Soar/Homebrew installs" | tee 
         log_info "Dry-run mode active: NO changes will be made."
         echo "" | tee -a "${LOG_FILE}"
         echo "The following items WOULD be removed if you run without --dry-run:" | tee -a "${LOG_FILE}"
-        echo "  - System services/timers: zypper-autodownload.service, zypper-autodownload.timer" | tee -a "${LOG_FILE}"
-        echo "    zypper-cache-cleanup.service, zypper-cache-cleanup.timer" | tee -a "${LOG_FILE}"
-        echo "    zypper-auto-verify.service, zypper-auto-verify.timer" | tee -a "${LOG_FILE}"
-echo "  - Root binaries: /usr/local/bin/zypper-download-with-progress, /usr/local/bin/dnf-auto-helper" | tee -a "${LOG_FILE}"
-        echo "  - User units: $SUDO_USER_HOME/.config/systemd/user/zypper-notify-user.service/timer" | tee -a "${LOG_FILE}"
+        echo "  - System services/timers: dnf-autodownload.service, dnf-autodownload.timer" | tee -a "${LOG_FILE}"
+        echo "    dnf-cache-cleanup.service, dnf-cache-cleanup.timer" | tee -a "${LOG_FILE}"
+        echo "    dnf-auto-verify.service, dnf-auto-verify.timer" | tee -a "${LOG_FILE}"
+        echo "    (plus any legacy zypper-* units if present)" | tee -a "${LOG_FILE}"
+echo "  - Root binaries: /usr/local/bin/dnf-download-with-progress, /usr/local/bin/dnf-auto-helper" | tee -a "${LOG_FILE}"
+        echo "  - User units: $SUDO_USER_HOME/.config/systemd/user/dnf-notify-user.service/timer" | tee -a "${LOG_FILE}"
+        echo "    (plus any legacy zypper-notify-user.* units)" | tee -a "${LOG_FILE}"
 echo "  - Helper scripts: $SUDO_USER_HOME/.local/bin/dnf-notify-updater.py, dnf-run-install," | tee -a "${LOG_FILE}"
-echo "    zypper-with-ps, dnf-view-changes, zypper-soar-install-helper" | tee -a "${LOG_FILE}"
+echo "    dnf-with-ps, dnf-view-changes, dnf-soar-install-helper" | tee -a "${LOG_FILE}"
         if [ "${UNINSTALL_KEEP_LOGS:-0}" -eq 1 ]; then
             echo "  - Logs under $LOG_DIR would be LEFT IN PLACE (--keep-logs)" | tee -a "${LOG_FILE}"
         else
@@ -1176,6 +1187,14 @@ update_status "Uninstalling dnf-auto-helper components..."
 
     # 1. Stop and disable root timers/services
     log_debug "Disabling root timers and services..."
+    # New DNF-based units
+    systemctl disable --now dnf-autodownload.timer >> "${LOG_FILE}" 2>&1 || true
+    systemctl disable --now dnf-cache-cleanup.timer >> "${LOG_FILE}" 2>&1 || true
+    systemctl disable --now dnf-auto-verify.timer >> "${LOG_FILE}" 2>&1 || true
+    systemctl stop dnf-autodownload.service >> "${LOG_FILE}" 2>&1 || true
+    systemctl stop dnf-cache-cleanup.service >> "${LOG_FILE}" 2>&1 || true
+    systemctl stop dnf-auto-verify.service >> "${LOG_FILE}" 2>&1 || true
+    # Legacy zypper-auto-helper units (for cleanup on upgraded systems)
     systemctl disable --now zypper-autodownload.timer >> "${LOG_FILE}" 2>&1 || true
     systemctl disable --now zypper-cache-cleanup.timer >> "${LOG_FILE}" 2>&1 || true
     systemctl disable --now zypper-auto-verify.timer >> "${LOG_FILE}" 2>&1 || true
@@ -1186,6 +1205,12 @@ update_status "Uninstalling dnf-auto-helper components..."
     # 2. Stop and disable user timer/service
     if [ -n "${SUDO_USER:-}" ]; then
         log_debug "Disabling user timer and service for $SUDO_USER..."
+        # New DNF-based user units
+        sudo -u "$SUDO_USER" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u "$SUDO_USER")/bus" \
+            systemctl --user disable --now dnf-notify-user.timer >> "${LOG_FILE}" 2>&1 || true
+        sudo -u "$SUDO_USER" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u "$SUDO_USER")/bus" \
+            systemctl --user stop dnf-notify-user.service >> "${LOG_FILE}" 2>&1 || true
+        # Legacy zypper-based units
         sudo -u "$SUDO_USER" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u "$SUDO_USER")/bus" \
             systemctl --user disable --now zypper-notify-user.timer >> "${LOG_FILE}" 2>&1 || true
         sudo -u "$SUDO_USER" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u "$SUDO_USER")/bus" \
@@ -1194,6 +1219,16 @@ update_status "Uninstalling dnf-auto-helper components..."
 
     # 3. Remove systemd unit files and root binaries
     log_debug "Removing root systemd units and binaries..."
+    # New DNF-based units
+    rm -f /etc/systemd/system/dnf-autodownload.service >> "${LOG_FILE}" 2>&1 || true
+    rm -f /etc/systemd/system/dnf-autodownload.timer >> "${LOG_FILE}" 2>&1 || true
+    rm -f /etc/systemd/system/dnf-cache-cleanup.service >> "${LOG_FILE}" 2>&1 || true
+    rm -f /etc/systemd/system/dnf-cache-cleanup.timer >> "${LOG_FILE}" 2>&1 || true
+    rm -f /etc/systemd/system/dnf-auto-verify.service >> "${LOG_FILE}" 2>&1 || true
+    rm -f /etc/systemd/system/dnf-auto-verify.timer >> "${LOG_FILE}" 2>&1 || true
+    rm -f /usr/local/bin/dnf-download-with-progress >> "${LOG_FILE}" 2>&1 || true
+    rm -f /usr/local/bin/dnf-auto-helper >> "${LOG_FILE}" 2>&1 || true
+    # Legacy zypper-based units and binaries
     rm -f /etc/systemd/system/zypper-autodownload.service >> "${LOG_FILE}" 2>&1 || true
     rm -f /etc/systemd/system/zypper-autodownload.timer >> "${LOG_FILE}" 2>&1 || true
     rm -f /etc/systemd/system/zypper-cache-cleanup.service >> "${LOG_FILE}" 2>&1 || true
@@ -1201,14 +1236,21 @@ update_status "Uninstalling dnf-auto-helper components..."
     rm -f /etc/systemd/system/zypper-auto-verify.service >> "${LOG_FILE}" 2>&1 || true
     rm -f /etc/systemd/system/zypper-auto-verify.timer >> "${LOG_FILE}" 2>&1 || true
     rm -f /usr/local/bin/zypper-download-with-progress >> "${LOG_FILE}" 2>&1 || true
-rm -f /usr/local/bin/dnf-auto-helper >> "${LOG_FILE}" 2>&1 || true
 
     # 4. Remove user-level scripts and systemd units
     if [ -n "${SUDO_USER_HOME:-}" ]; then
         log_debug "Removing user scripts and units under $SUDO_USER_HOME..."
+        # New DNF-based user units and helpers
+        rm -f "$SUDO_USER_HOME/.config/systemd/user/dnf-notify-user.service" >> "${LOG_FILE}" 2>&1 || true
+        rm -f "$SUDO_USER_HOME/.config/systemd/user/dnf-notify-user.timer" >> "${LOG_FILE}" 2>&1 || true
+        rm -f "$SUDO_USER_HOME/.local/bin/dnf-notify-updater.py" >> "${LOG_FILE}" 2>&1 || true
+        rm -f "$SUDO_USER_HOME/.local/bin/dnf-run-install" >> "${LOG_FILE}" 2>&1 || true
+        rm -f "$SUDO_USER_HOME/.local/bin/dnf-with-ps" >> "${LOG_FILE}" 2>&1 || true
+        rm -f "$SUDO_USER_HOME/.local/bin/dnf-view-changes" >> "${LOG_FILE}" 2>&1 || true
+        rm -f "$SUDO_USER_HOME/.local/bin/dnf-soar-install-helper" >> "${LOG_FILE}" 2>&1 || true
+        # Legacy zypper-based units and helpers
         rm -f "$SUDO_USER_HOME/.config/systemd/user/zypper-notify-user.service" >> "${LOG_FILE}" 2>&1 || true
         rm -f "$SUDO_USER_HOME/.config/systemd/user/zypper-notify-user.timer" >> "${LOG_FILE}" 2>&1 || true
-rm -f "$SUDO_USER_HOME/.local/bin/dnf-notify-updater.py" >> "${LOG_FILE}" 2>&1 || true
         rm -f "$SUDO_USER_HOME/.local/bin/zypper-run-install" >> "${LOG_FILE}" 2>&1 || true
         rm -f "$SUDO_USER_HOME/.local/bin/zypper-with-ps" >> "${LOG_FILE}" 2>&1 || true
         rm -f "$SUDO_USER_HOME/.local/bin/zypper-view-changes" >> "${LOG_FILE}" 2>&1 || true
@@ -1221,10 +1263,16 @@ rm -f "$SUDO_USER_HOME/.local/bin/dnf-notify-updater.py" >> "${LOG_FILE}" 2>&1 |
         sed -i '/alias zypper=/d' "$SUDO_USER_HOME/.bashrc" 2>>"${LOG_FILE}" || true
         sed -i '/# Zypper wrapper for auto service check/d' "$SUDO_USER_HOME/.zshrc" 2>>"${LOG_FILE}" || true
         sed -i '/alias zypper=/d' "$SUDO_USER_HOME/.zshrc" 2>>"${LOG_FILE}" || true
-        sed -i '/# zypper-auto-helper command alias/d' "$SUDO_USER_HOME/.bashrc" 2>>"${LOG_FILE}" || true
-        sed -i '/alias zypper-auto-helper=/d' "$SUDO_USER_HOME/.bashrc" 2>>"${LOG_FILE}" || true
-        sed -i '/# zypper-auto-helper command alias/d' "$SUDO_USER_HOME/.zshrc" 2>>"${LOG_FILE}" || true
-        sed -i '/alias zypper-auto-helper=/d' "$SUDO_USER_HOME/.zshrc" 2>>"${LOG_FILE}" || true
+        # Also remove newer DNF wrapper aliases if present
+        sed -i '/# DNF wrapper for auto service check/d' "$SUDO_USER_HOME/.bashrc" 2>>"${LOG_FILE}" || true
+        sed -i "/alias dnf='$ZYPPER_WRAPPER_PATH'/d" "$SUDO_USER_HOME/.bashrc" 2>>"${LOG_FILE}" || true
+        sed -i '/# DNF wrapper for auto service check/d' "$SUDO_USER_HOME/.zshrc" 2>>"${LOG_FILE}" || true
+        sed -i "/alias dnf='$ZYPPER_WRAPPER_PATH'/d" "$SUDO_USER_HOME/.zshrc" 2>>"${LOG_FILE}" || true
+        # Remove command aliases for the helper CLI
+        sed -i '/# dnf-auto-helper command alias/d' "$SUDO_USER_HOME/.bashrc" 2>>"${LOG_FILE}" || true
+        sed -i '/alias dnf-auto-helper=/d' "$SUDO_USER_HOME/.bashrc" 2>>"${LOG_FILE}" || true
+        sed -i '/# dnf-auto-helper command alias/d' "$SUDO_USER_HOME/.zshrc" 2>>"${LOG_FILE}" || true
+        sed -i '/alias dnf-auto-helper=/d' "$SUDO_USER_HOME/.zshrc" 2>>"${LOG_FILE}" || true
     fi
 
     # 5. Remove logs and caches
@@ -1258,10 +1306,11 @@ rm -rf "$SUDO_USER_HOME/.cache/dnf-notify" >> "${LOG_FILE}" 2>&1 || true
     # 7. Clear any failed state in systemd for the removed units so
     #    `systemctl --user status` looks clean after uninstall.
     log_debug "Resetting failed state for removed systemd units (if any)..."
-systemctl reset-failed dnf-autodownload.service dnf-cache-cleanup.service dnf-auto-verify.service >> "${LOG_FILE}"
+    systemctl reset-failed dnf-autodownload.service dnf-cache-cleanup.service dnf-auto-verify.service >> "${LOG_FILE}" 2>&1 || true
+    systemctl reset-failed zypper-autodownload.service zypper-cache-cleanup.service zypper-auto-verify.service >> "${LOG_FILE}" 2>&1 || true
     if [ -n "${SUDO_USER:-}" ]; then
         sudo -u "$SUDO_USER" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u "$SUDO_USER")/bus" \
-systemctl --user reset-failed dnf-notify-user.service >> "${LOG_FILE}"
+            systemctl --user reset-failed dnf-notify-user.service zypper-notify-user.service >> "${LOG_FILE}" 2>&1 || true
     fi
 
 log_success "Core dnf-auto-helper components uninstalled (installer script left in place)."
@@ -1269,9 +1318,9 @@ update_status "SUCCESS: dnf-auto-helper core components uninstalled"
 
     echo "" | tee -a "${LOG_FILE}"
     echo "Uninstall summary:" | tee -a "${LOG_FILE}"
-    echo "  - System services and timers removed: zypper-autodownload, zypper-cache-cleanup, zypper-auto-verify" | tee -a "${LOG_FILE}"
+    echo "  - System services and timers removed: dnf-autodownload, dnf-cache-cleanup, dnf-auto-verify (and any legacy zypper-* equivalents)" | tee -a "${LOG_FILE}"
     echo "  - User notifier units and helper scripts removed for user $SUDO_USER" | tee -a "${LOG_FILE}"
-    echo "  - No changes made to snapd, Flatpak, Soar, Homebrew or /etc/zypp/zypper.conf" | tee -a "${LOG_FILE}"
+    echo "  - No changes made to snapd, Flatpak, Soar, Homebrew or /etc/dnf/dnf.conf" | tee -a "${LOG_FILE}"
     if [ "${UNINSTALL_KEEP_LOGS:-0}" -eq 1 ]; then
         echo "  - Logs under $LOG_DIR left in place (--keep-logs)" | tee -a "${LOG_FILE}"
     else
@@ -1504,14 +1553,14 @@ run_pipx_helper_only() {
 
 # Show help if requested, or when invoked as the installed CLI with no arguments
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" || "${1:-}" == "help" \
-   || ( $# -eq 0 && "$(basename "$0")" == "zypper-auto-helper" ) ]]; then
-    echo "Zypper Auto-Helper - Installation and Maintenance Tool"
+   || ( $# -eq 0 && "$(basename "$0")" == "dnf-auto-helper" ) ]]; then
+    echo "DNF Auto-Helper - Installation and Maintenance Tool"
     echo ""
-    echo "Usage: zypper-auto-helper [COMMAND]"
+    echo "Usage: dnf-auto-helper [COMMAND]"
     echo "   or: sudo $0 [COMMAND]  # when running the script directly without the shell alias"
     echo ""
     echo "Commands:"
-    echo "  install           Install or update the zypper auto-updater system (default)"
+    echo "  install           Install or update the DNF auto-updater system (default)"
     echo "  --verify          Run verification and auto-repair checks"
     echo "  --repair          Same as --verify (alias)"
     echo "  --diagnose        Same as --verify (alias)"
@@ -1520,16 +1569,16 @@ if [[ "${1:-}" == "--help" || "${1:-}" == "-h" || "${1:-}" == "help" \
     echo "  --soar            Install/upgrade optional Soar CLI helper for the user"
     echo "  --brew            Install/upgrade Homebrew (brew) for the user"
     echo "  --pip-package     Install/upgrade pipx and show how to manage Python CLI tools with pipx"
-    echo "  --uninstall-zypper-helper  Remove zypper-auto-helper services, timers, logs, and user scripts"
+    echo "  --uninstall-zypper-helper  Remove legacy zypper-auto-helper services, timers, logs, and user scripts"
     echo "                       (alias: --uninstall-zypper)"
-    echo "  --reset-config    Reset /etc/zypper-auto.conf to documented defaults (with backup)"
+    echo "  --reset-config    Reset /etc/dnf-auto.conf to documented defaults (with backup)"
     echo "  --help            Show this help message"
     echo ""
     echo "Examples:"
-    echo "  zypper-auto-helper install         # Full installation (via shell alias, runs with sudo)"
-    echo "  zypper-auto-helper --verify        # Check system health and auto-fix issues"
-    echo "  zypper-auto-helper --check         # Verify script syntax"
-    echo "  zypper-auto-helper --soar          # Install or upgrade Soar CLI helper"
+    echo "  dnf-auto-helper install         # Full installation (via shell alias, runs with sudo)"
+    echo "  dnf-auto-helper --verify        # Check system health and auto-fix issues"
+    echo "  dnf-auto-helper --check         # Verify script syntax"
+    echo "  dnf-auto-helper --soar          # Install or upgrade Soar CLI helper"
     echo ""
     echo "Verification checks (--verify):"
     echo "  - System/user services active and enabled"
@@ -1538,7 +1587,7 @@ if [[ "${1:-}" == "--help" || "${1:-}" == "-h" || "${1:-}" == "help" \
     echo "  - No stale processes or bytecode cache"
     echo "  - Auto-repairs most common issues"
     echo ""
-    echo "Note: After installation, you can use 'zypper-auto-helper' from anywhere."
+    echo "Note: After installation, you can use 'dnf-auto-helper' from anywhere."
     echo ""
     exit 0
 fi
@@ -1605,7 +1654,7 @@ if [[ "${1:-}" == "--verify" || "${1:-}" == "--repair" || "${1:-}" == "--diagnos
     log_info "Verification and auto-repair mode requested"
     echo "" | tee -a "${LOG_FILE}"
     echo "==============================================" | tee -a "${LOG_FILE}"
-    echo "  Zypper Auto-Helper - Verification Mode" | tee -a "${LOG_FILE}"
+    echo "  DNF Auto-Helper - Verification Mode" | tee -a "${LOG_FILE}"
     echo "==============================================" | tee -a "${LOG_FILE}"
     echo "" | tee -a "${LOG_FILE}"
     
@@ -1671,6 +1720,8 @@ check_and_install "upower" "upower" "checking AC power"
 check_and_install "inxi" "inxi" "hardware and network detection"
 check_and_install "python3" "python3" "running the notifier script"
 check_and_install "pkexec" "polkit" "graphical authentication"
+check_and_install "needs-restarting" "dnf-plugins-core" "detecting services that need restarting"
+check_and_install "semanage" "policycoreutils-python-utils" "managing SELinux file contexts (semanage)"
 
 # Check Python version (must be 3.7+)
 log_debug "Checking Python version..."
@@ -1723,6 +1774,7 @@ cleanup_old_logs
 log_info ">>> Cleaning up all old system-wide services..."
 update_status "Removing old system services..."
 log_debug "Disabling old timers and services..."
+# Legacy zypper-auto-helper units only; new DNF units are managed elsewhere
 systemctl disable --now zypper-autodownload.timer >> "${LOG_FILE}" 2>&1 || true
 systemctl stop zypper-autodownload.service >> "${LOG_FILE}" 2>&1 || true
 systemctl disable --now zypper-notify.timer >> "${LOG_FILE}" 2>&1 || true
@@ -1745,6 +1797,7 @@ sudo -u "$SUDO_USER" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$SUDO_USER/bu
 # Force kill any running Python notifier processes
 log_debug "Force-killing any running Python notifier processes..."
 pkill -9 -f "zypper-notify-updater.py" >> "${LOG_FILE}" 2>&1 || true
+pkill -9 -f "dnf-notify-updater.py" >> "${LOG_FILE}" 2>&1 || true
 sleep 1
 
 # Clear Python bytecode cache
@@ -1781,14 +1834,14 @@ mkdir -p "${LOG_DIR}/service-logs"
 chmod 755 "${LOG_DIR}/service-logs"
 
 # First, create the downloader script with progress tracking
-DOWNLOADER_SCRIPT="/usr/local/bin/zypper-download-with-progress"
+DOWNLOADER_SCRIPT="/usr/local/bin/dnf-download-with-progress"
 log_debug "Creating downloader script with progress tracking: $DOWNLOADER_SCRIPT"
 cat << 'DLSCRIPT' > "$DOWNLOADER_SCRIPT"
 #!/bin/bash
 # DNF downloader with real-time progress tracking
 set -euo pipefail
 
-LOG_DIR="/var/log/dnf-auto"
+LOG_DIR="__LOG_DIR_PLACEHOLDER__"
 STATUS_FILE="$LOG_DIR/download-status.txt"
 START_TIME_FILE="$LOG_DIR/download-start-time.txt"
 CACHE_DIR="/var/cache/dnf"
@@ -1796,7 +1849,7 @@ CACHE_DIR="/var/cache/dnf"
 # Optional: read extra dup flags from /etc/dnf-auto.conf so users can
 # tweak solver behaviour (e.g. --allow-vendor-change) without editing
 # this script directly.
-CONFIG_FILE="/etc/dnf-auto.conf"
+CONFIG_FILE="__CONFIG_FILE_PLACEHOLDER__"
 if [ -f "$CONFIG_FILE" ]; then
     # shellcheck source=/etc/dnf-auto.conf
     . "$CONFIG_FILE"
@@ -2008,12 +2061,17 @@ fi
 
 DLSCRIPT
 chmod +x "$DOWNLOADER_SCRIPT"
+
+# Inject configured paths into downloader script
+sed -i "s|__LOG_DIR_PLACEHOLDER__|${LOG_DIR}|g" "$DOWNLOADER_SCRIPT"
+sed -i "s|__CONFIG_FILE_PLACEHOLDER__|${CONFIG_FILE}|g" "$DOWNLOADER_SCRIPT"
+
 log_success "Downloader script created with progress tracking"
 
 # Now create the service file
 cat << EOF > ${DL_SERVICE_FILE}
 [Unit]
-Description=Download Tumbleweed updates in background
+Description=Download DNF system updates in background
 ConditionACPower=true
 ConditionNotOnMeteredConnection=true
 Wants=network-online.target
@@ -2186,7 +2244,7 @@ chown -R "$SUDO_USER:$SUDO_USER" "$SUDO_USER_HOME/.local"
 log_success "User directories created"
 
 # Create user log directory
-USER_LOG_DIR="$SUDO_USER_HOME/.local/share/zypper-notify"
+USER_LOG_DIR="$SUDO_USER_HOME/.local/share/dnf-notify"
 log_debug "Creating user log directory: $USER_LOG_DIR"
 mkdir -p "$USER_LOG_DIR"
 chown -R "$SUDO_USER:$SUDO_USER" "$USER_LOG_DIR"
@@ -2194,14 +2252,19 @@ chown -R "$SUDO_USER:$SUDO_USER" "$USER_LOG_DIR"
 # --- 7b. Create Zypper Wrapper for Manual Updates ---
 log_info ">>> Creating zypper wrapper script for manual updates..."
 update_status "Creating zypper wrapper..."
-ZYPPER_WRAPPER_PATH="$USER_BIN_DIR/zypper-with-ps"
-log_debug "Writing zypper wrapper to: $ZYPPER_WRAPPER_PATH"
+ZYPPER_WRAPPER_PATH="$USER_BIN_DIR/dnf-with-ps"
+log_debug "Writing dnf wrapper to: $ZYPPER_WRAPPER_PATH"
 cat << 'EOF' > "$ZYPPER_WRAPPER_PATH"
 #!/usr/bin/env bash
 # Wrapper that runs DNF for system updates and shows which services need restarting
 
 # Load feature toggles from the same config used by the installer.
-CONFIG_FILE="/etc/zypper-auto.conf"
+CONFIG_FILE="/etc/dnf-auto.conf"
+# Backwards-compat: if an older /etc/zypper-auto.conf exists but
+# /etc/dnf-auto.conf does not, prefer the legacy file once.
+if [ ! -r "$CONFIG_FILE" ] && [ -r "/etc/zypper-auto.conf" ]; then
+    CONFIG_FILE="/etc/zypper-auto.conf"
+fi
 
 # Default feature toggles (can be overridden by CONFIG_FILE)
 ENABLE_FLATPAK_UPDATES="true"
@@ -2234,6 +2297,13 @@ has_pkg_lock() {
         fi
     fi
 
+    # Also treat an actively held RPM database lock as a package-manager lock.
+    if [ -f "/var/lib/rpm/.rpm.lock" ] && command -v fuser >/dev/null 2>&1; then
+        if fuser "/var/lib/rpm/.rpm.lock" >/dev/null 2>&1; then
+            return 0
+        fi
+    fi
+
     # Fallback: any obviously dnf/PackageKit related process.
     if pgrep -x dnf >/dev/null 2>&1; then
         return 0
@@ -2246,7 +2316,7 @@ has_pkg_lock() {
 }
 
 # Check if we're running an update-style command
-STATUS_DIR="/var/log/zypper-auto"
+STATUS_DIR="/var/log/dnf-auto"
 STATUS_FILE="$STATUS_DIR/download-status.txt"
 
 if [[ "$*" == *"dup"* ]] || [[ "$*" == *"dist-upgrade"* ]] || [[ "$*" == *"update"* ]] || [[ "$*" == *"upgrade"* ]]; then
@@ -2316,7 +2386,7 @@ if [[ "$*" == *"dup"* ]] || [[ "$*" == *"dist-upgrade"* ]] || [[ "$*" == *"updat
             echo "   To install: sudo dnf install flatpak"
         fi
     else
-        echo "ℹ️  Flatpak updates are disabled in /etc/zypper-auto.conf (ENABLE_FLATPAK_UPDATES=false)."
+        echo "ℹ️  Flatpak updates are disabled in /etc/dnf-auto.conf (ENABLE_FLATPAK_UPDATES=false)."
     fi
 
     echo ""
@@ -2338,7 +2408,7 @@ if [[ "$*" == *"dup"* ]] || [[ "$*" == *"dist-upgrade"* ]] || [[ "$*" == *"updat
             echo "   Then enable: sudo systemctl enable --now snapd"
         fi
     else
-        echo "ℹ️  Snap updates are disabled in /etc/zypper-auto.conf (ENABLE_SNAP_UPDATES=false)."
+        echo "ℹ️  Snap updates are disabled in /etc/dnf-auto.conf (ENABLE_SNAP_UPDATES=false)."
     fi
 
     echo ""
@@ -2417,7 +2487,7 @@ if [[ "$*" == *"dup"* ]] || [[ "$*" == *"dist-upgrade"* ]] || [[ "$*" == *"updat
     echo ""
 
     if [[ "${ENABLE_BREW_UPDATES,,}" != "true" ]]; then
-        echo "ℹ️  Homebrew updates are disabled in /etc/zypper-auto.conf (ENABLE_BREW_UPDATES=false)."
+        echo "ℹ️  Homebrew updates are disabled in /etc/dnf-auto.conf (ENABLE_BREW_UPDATES=false)."
         echo "    You can still run 'brew update' / 'brew upgrade' manually."
         echo ""
     else
@@ -2462,7 +2532,7 @@ if [[ "$*" == *"dup"* ]] || [[ "$*" == *"dist-upgrade"* ]] || [[ "$*" == *"updat
     echo ""
 
     if [[ "${ENABLE_PIPX_UPDATES,,}" != "true" ]]; then
-        echo "ℹ️  pipx updates are disabled in /etc/zypper-auto.conf (ENABLE_PIPX_UPDATES=false)."
+        echo "ℹ️  pipx updates are disabled in /etc/dnf-auto.conf (ENABLE_PIPX_UPDATES=false)."
         echo "    You can still manage Python CLI tools manually with pipx."
         echo ""
     else
@@ -2528,125 +2598,120 @@ chmod +x "$ZYPPER_WRAPPER_PATH"
 log_success "Zypper wrapper script created and made executable"
 
 # Add shell alias/function to user's shell config
-log_info ">>> Adding zypper alias to shell configurations..."
+log_info ">>> Adding dnf alias to shell configurations..."
 update_status "Configuring shell aliases..."
 
 # Bash configuration
 if [ -f "$SUDO_USER_HOME/.bashrc" ]; then
-    log_debug "Adding zypper alias to .bashrc"
-    # Remove old alias if it exists
-    sed -i '/# Zypper wrapper for auto service check/d' "$SUDO_USER_HOME/.bashrc"
-    sed -i '/alias zypper=/d' "$SUDO_USER_HOME/.bashrc"
+    log_debug "Adding dnf alias to .bashrc"
+    # Remove old aliases if they exist
+    sed -i '/# Zypper wrapper for auto service check/d' "$SUDO_USER_HOME/.bashrc" || true
+    sed -i '/alias zypper=/d' "$SUDO_USER_HOME/.bashrc" || true
+    sed -i '/# DNF wrapper for auto service check/d' "$SUDO_USER_HOME/.bashrc" || true
+    sed -i "/alias dnf='$ZYPPER_WRAPPER_PATH'/d" "$SUDO_USER_HOME/.bashrc" || true
     # Add new alias
     echo "" >> "$SUDO_USER_HOME/.bashrc"
-    echo "# Zypper wrapper for auto service check (added by zypper-auto-helper)" >> "$SUDO_USER_HOME/.bashrc"
-    echo "alias zypper='$ZYPPER_WRAPPER_PATH'" >> "$SUDO_USER_HOME/.bashrc"
+    echo "# DNF wrapper for auto service check (added by dnf-auto-helper)" >> "$SUDO_USER_HOME/.bashrc"
+    echo "alias dnf='$ZYPPER_WRAPPER_PATH'" >> "$SUDO_USER_HOME/.bashrc"
     chown "$SUDO_USER:$SUDO_USER" "$SUDO_USER_HOME/.bashrc"
-    log_success "Added zypper alias to .bashrc"
+    log_success "Added dnf alias to .bashrc"
 fi
 
 # Fish configuration
 if [ -d "$SUDO_USER_HOME/.config/fish" ]; then
-    log_debug "Adding zypper wrapper to fish config"
+    log_debug "Adding dnf wrapper to fish config"
     FISH_CONFIG_DIR="$SUDO_USER_HOME/.config/fish/conf.d"
     mkdir -p "$FISH_CONFIG_DIR"
-    FISH_ALIAS_FILE="$FISH_CONFIG_DIR/zypper-wrapper.fish"
+    FISH_ALIAS_FILE="$FISH_CONFIG_DIR/dnf-wrapper.fish"
     cat > "$FISH_ALIAS_FILE" << 'FISHEOF'
-# Zypper wrapper for auto service check (added by zypper-auto-helper)
+# DNF wrapper for auto service check (added by dnf-auto-helper)
 
-# Wrap zypper command
-function zypper --wraps zypper --description "Wrapper for zypper with post-update checks"
-    # Check if we already have sudo in the command (avoid double sudo)
-    set -l has_sudo 0
-    for arg in $argv
-        if test "$arg" = "sudo"
-            set has_sudo 1
-            break
-        end
-    end
-    
+# Wrap dnf command
+function dnf --wraps dnf --description "Wrapper for dnf with post-update checks"
     # Call the wrapper script (which handles sudo internally)
-    ~/.local/bin/zypper-with-ps $argv
+    ~/.local/bin/dnf-with-ps $argv
 end
 
-# Wrap sudo command when used with zypper
-function sudo --wraps sudo --description "Wrapper for sudo to intercept zypper commands"
-    # Check if first argument is zypper
-    if test (count $argv) -gt 0; and test "$argv[1]" = "zypper"
-        # Remove 'zypper' from argv and call our zypper wrapper
-        set -l zypper_args $argv[2..-1]
-        ~/.local/bin/zypper-with-ps $zypper_args
+# Wrap sudo command when used with dnf
+function sudo --wraps sudo --description "Wrapper for sudo to intercept dnf commands"
+    # Check if first argument is dnf
+    if test (count $argv) -gt 0; and test "$argv[1]" = "dnf"
+        # Remove 'dnf' from argv and call our dnf wrapper
+        set -l dnf_args $argv[2..-1]
+        ~/.local/bin/dnf-with-ps $dnf_args
     else
-        # Not a zypper command, use real sudo
+        # Not a dnf command, use real sudo
         command sudo $argv
     end
 end
 FISHEOF
     chown -R "$SUDO_USER:$SUDO_USER" "$SUDO_USER_HOME/.config/fish"
-    log_success "Added zypper wrapper functions to fish config"
+    log_success "Added dnf wrapper functions to fish config"
 fi
 
 # Zsh configuration
 if [ -f "$SUDO_USER_HOME/.zshrc" ]; then
-    log_debug "Adding zypper alias to .zshrc"
+    log_debug "Adding dnf alias to .zshrc"
     # Remove old alias if it exists
-    sed -i '/# Zypper wrapper for auto service check/d' "$SUDO_USER_HOME/.zshrc"
-    sed -i '/alias zypper=/d' "$SUDO_USER_HOME/.zshrc"
+    sed -i '/# Zypper wrapper for auto service check/d' "$SUDO_USER_HOME/.zshrc" || true
+    sed -i '/alias zypper=/d' "$SUDO_USER_HOME/.zshrc" || true
+    sed -i '/# DNF wrapper for auto service check/d' "$SUDO_USER_HOME/.zshrc" || true
+    sed -i "/alias dnf='$ZYPPER_WRAPPER_PATH'/d" "$SUDO_USER_HOME/.zshrc" || true
     # Add new alias
     echo "" >> "$SUDO_USER_HOME/.zshrc"
-    echo "# Zypper wrapper for auto service check (added by zypper-auto-helper)" >> "$SUDO_USER_HOME/.zshrc"
-    echo "alias zypper='$ZYPPER_WRAPPER_PATH'" >> "$SUDO_USER_HOME/.zshrc"
+    echo "# DNF wrapper for auto service check (added by dnf-auto-helper)" >> "$SUDO_USER_HOME/.zshrc"
+    echo "alias dnf='$ZYPPER_WRAPPER_PATH'" >> "$SUDO_USER_HOME/.zshrc"
     chown "$SUDO_USER:$SUDO_USER" "$SUDO_USER_HOME/.zshrc"
-    log_success "Added zypper alias to .zshrc"
+    log_success "Added dnf alias to .zshrc"
 fi
 
 log_success "Shell aliases configured. Restart your shell or run 'source ~/.bashrc' (or equivalent) to activate."
 
-# --- 7c. Add zypper-auto-helper command alias to shells ---
-log_info ">>> Adding zypper-auto-helper command alias to shell configurations..."
-update_status "Configuring zypper-auto-helper aliases..."
+# --- 7c. Add dnf-auto-helper command alias to shells ---
+log_info ">>> Adding dnf-auto-helper command alias to shell configurations..."
+update_status "Configuring dnf-auto-helper aliases..."
 
-# Bash configuration for zypper-auto-helper
+# Bash configuration for dnf-auto-helper
 if [ -f "$SUDO_USER_HOME/.bashrc" ]; then
-    log_debug "Adding zypper-auto-helper alias to .bashrc"
+    log_debug "Adding dnf-auto-helper alias to .bashrc"
     # Remove old alias if it exists
-sed -i '/# dnf-auto-helper command alias/d' "$SUDO_USER_HOME/.bashrc"
-sed -i '/alias dnf-auto-helper=/d' "$SUDO_USER_HOME/.bashrc"
+    sed -i '/# dnf-auto-helper command alias/d' "$SUDO_USER_HOME/.bashrc" || true
+    sed -i '/alias dnf-auto-helper=/d' "$SUDO_USER_HOME/.bashrc" || true
     # Add new alias
     echo "" >> "$SUDO_USER_HOME/.bashrc"
-    echo "# zypper-auto-helper command alias (added by zypper-auto-helper)" >> "$SUDO_USER_HOME/.bashrc"
-    echo "alias zypper-auto-helper='sudo /usr/local/bin/zypper-auto-helper'" >> "$SUDO_USER_HOME/.bashrc"
+    echo "# dnf-auto-helper command alias (added by dnf-auto-helper)" >> "$SUDO_USER_HOME/.bashrc"
+    echo "alias dnf-auto-helper='sudo /usr/local/bin/dnf-auto-helper'" >> "$SUDO_USER_HOME/.bashrc"
     chown "$SUDO_USER:$SUDO_USER" "$SUDO_USER_HOME/.bashrc"
-    log_success "Added zypper-auto-helper alias to .bashrc"
+    log_success "Added dnf-auto-helper alias to .bashrc"
 fi
 
-# Fish configuration for zypper-auto-helper
+# Fish configuration for dnf-auto-helper
 if [ -d "$SUDO_USER_HOME/.config/fish" ]; then
-    log_debug "Adding zypper-auto-helper alias to fish config"
+    log_debug "Adding dnf-auto-helper alias to fish config"
     FISH_HELPER_FILE="$SUDO_USER_HOME/.config/fish/conf.d/zypper-auto-helper-alias.fish"
     cat > "$FISH_HELPER_FILE" << 'FISHHELPER'
-# zypper-auto-helper command alias (added by zypper-auto-helper)
-alias zypper-auto-helper='sudo /usr/local/bin/zypper-auto-helper'
+# dnf-auto-helper command alias (added by dnf-auto-helper)
+alias dnf-auto-helper='sudo /usr/local/bin/dnf-auto-helper'
 FISHHELPER
     chown "$SUDO_USER:$SUDO_USER" "$FISH_HELPER_FILE"
-    log_success "Added zypper-auto-helper alias to fish config"
+    log_success "Added dnf-auto-helper alias to fish config"
 fi
 
-# Zsh configuration for zypper-auto-helper
+# Zsh configuration for dnf-auto-helper
 if [ -f "$SUDO_USER_HOME/.zshrc" ]; then
-    log_debug "Adding zypper-auto-helper alias to .zshrc"
+    log_debug "Adding dnf-auto-helper alias to .zshrc"
     # Remove old alias if it exists
-sed -i '/# dnf-auto-helper command alias/d' "$SUDO_USER_HOME/.zshrc"
-sed -i '/alias dnf-auto-helper=/d' "$SUDO_USER_HOME/.zshrc"
+    sed -i '/# dnf-auto-helper command alias/d' "$SUDO_USER_HOME/.zshrc" || true
+    sed -i '/alias dnf-auto-helper=/d' "$SUDO_USER_HOME/.zshrc" || true
     # Add new alias
     echo "" >> "$SUDO_USER_HOME/.zshrc"
-    echo "# zypper-auto-helper command alias (added by zypper-auto-helper)" >> "$SUDO_USER_HOME/.zshrc"
-    echo "alias zypper-auto-helper='sudo /usr/local/bin/zypper-auto-helper'" >> "$SUDO_USER_HOME/.zshrc"
+    echo "# dnf-auto-helper command alias (added by dnf-auto-helper)" >> "$SUDO_USER_HOME/.zshrc"
+    echo "alias dnf-auto-helper='sudo /usr/local/bin/dnf-auto-helper'" >> "$SUDO_USER_HOME/.zshrc"
     chown "$SUDO_USER:$SUDO_USER" "$SUDO_USER_HOME/.zshrc"
-    log_success "Added zypper-auto-helper alias to .zshrc"
+    log_success "Added dnf-auto-helper alias to .zshrc"
 fi
 
-log_success "zypper-auto-helper command aliases configured for all shells."
+log_success "dnf-auto-helper command aliases configured for all shells."
 
 # --- 8. Create/Update NOTIFIER (User Service) ---
 log_info ">>> Creating (user) notifier service: ${NT_SERVICE_FILE}"
@@ -3096,39 +3161,42 @@ def check_snapshots() -> tuple[bool, str]:
     log_info(msg)
     return False, msg
 def check_network_quality() -> tuple[bool, str]:
-    """Check network latency to ensure stable connection.
+    """Check connectivity using NetworkManager (firewall friendly).
+
     Returns: (is_good, message)
     """
     try:
+        # nmcli general reports overall connectivity state for the host.
+        # We treat "full" and "limited" as usable so that captive portals or
+        # partial connectivity still allow the updater to run, but anything
+        # else ("none", "portal", "unknown") is treated as a failure.
         result = subprocess.run(
-            ['ping', '-c', '3', '-W', '2', '1.1.1.1'],
+            ['nmcli', '-t', '-f', 'CONNECTIVITY', 'general'],
             capture_output=True,
             text=True,
-            timeout=10
+            timeout=5,
         )
-        
-        if result.returncode != 0:
-            msg = "Network unreachable"
-            log_info(msg)
-            return False, msg
-        
-        # Parse ping output for average latency
-        # Example: rtt min/avg/max/mdev = 10.1/15.2/20.3/5.1 ms
-        match = re.search(r'rtt min/avg/max/mdev = [\\d.]+/([\\d.]+)/', result.stdout)
-        if match:
-            avg_latency = float(match.group(1))
-            if avg_latency > 200:
-                msg = f"High latency: {avg_latency:.0f}ms"
-                log_info(msg)
-                return False, msg
-            log_debug(f"Network quality good: {avg_latency:.0f}ms latency")
-            return True, f"{avg_latency:.0f}ms latency"
-        
-        log_debug("Network quality check passed (couldn't parse latency)")
-        return True, "Network OK"
+        status = (result.stdout or '').strip().lower()
+        log_debug(f"nmcli connectivity status: {status or 'empty'}")
+
+        if status == "full":
+            return True, "Network connection is full"
+        if status == "limited":
+            # Limited connectivity is often a captive portal; allow but log.
+            log_info("Network connectivity is limited (possibly captive portal)")
+            return True, "Network is limited (captive portal?)"
+
+        if not status:
+            msg = "Network connectivity status unknown"
+        else:
+            msg = f"Network status: {status}"
+        log_info(msg)
+        return False, msg
     except Exception as e:
-        log_debug(f"Network quality check failed: {e}")
-        return True, "Could not check network"
+        # If NetworkManager/nmcli is unavailable or misconfigured, don't
+        # block updates entirely – just log and fall back to "unknown".
+        log_debug(f"NMCLI connectivity check failed: {e}")
+        return True, "Network check skipped"
 
 
 def is_package_manager_locked(stderr_text: str | None = None) -> bool:
@@ -3602,7 +3670,7 @@ def get_updates():
         log_debug("Executing: pkexec dnf -q makecache")
 
         subprocess.run(
-            ["pkexec", "dnf", "-q", "makecache"],
+            ["pkexec", "/usr/bin/dnf", "-q", "makecache"],
             check=True,
             capture_output=True,
         )
@@ -3611,7 +3679,7 @@ def get_updates():
         update_status("Running dnf upgrade --assumeno (preview)...")
         log_debug("Executing: pkexec dnf -q upgrade --assumeno")
 
-        dup_cmd = ["pkexec", "dnf", "-q", "upgrade", "--assumeno", *DUP_EXTRA_FLAGS]
+        dup_cmd = ["pkexec", "/usr/bin/dnf", "-q", "upgrade", "--assumeno", *DUP_EXTRA_FLAGS]
         result = subprocess.run(
             dup_cmd,
             check=True,
@@ -3776,12 +3844,18 @@ def extract_package_preview(output: str, max_packages: int = 5) -> list:
 
 
 def parse_output(output: str, include_preview: bool = True):
-    """Parse zypper's output for info.
+    """Parse DNF's transaction preview output for info.
+
+    NOTE (DNF4 vs DNF5): This parser currently expects DNF4-style summary
+    lines like "<N> packages to upgrade". If future dnf5 versions change
+    this wording, the package_count may fall back to 0 even when updates
+    exist; notifications will still work, but counts/previews might need
+    a small regex adjustment.
 
     Returns: (title, message, snapshot, package_count)
              or (None, None, None, 0).
     """
-    log_debug("Parsing zypper output...")
+    log_debug("Parsing dnf output...")
     
     if "Nothing to do." in output:
         log_info("No updates found in zypper output")
@@ -4267,9 +4341,9 @@ with open("/var/log/dnf-auto/download-status.txt", "w") as f:
                     # slightly different message.
                     log_error("Background downloader reported a repository error while checking for updates")
                     msg = (
-                        "The background updater hit an error while talking to configured repositories.\n\n"
-                        "Zypper reported repository failures or invalid metadata.\n\n"
-                        "Run 'sudo zypper refresh' in a terminal for full details."
+                        "The background updater hit an error while talking to configured repositories.\n\n"\
+                        "DNF reported repository failures or invalid metadata.\n\n"\
+                        "Run 'sudo dnf upgrade --refresh --assumeno' in a terminal for full details."
                     )
                     n = Notify.Notification.new(
                         "Update check failed (repositories)",
@@ -4302,21 +4376,21 @@ with open("/var/log/dnf-auto/download-status.txt", "w") as f:
                         exit_code = None
 
                     if exit_code is not None:
-                        log_info(f"Background downloader encountered a zypper solver/error exit code {exit_code}")
+                        log_info(f"Background downloader encountered a dnf solver/error exit code {exit_code}")
                     else:
                         log_info("Background downloader reported a solver error (unknown exit code)")
 
                     # Try to run a dry-run to get a summary of pending updates, even if
-                    # zypper still exits non-zero due to conflicts.
+                    # dnf still exits non-zero due to conflicts.
                     dry_output = ""
                     try:
-                        log_debug("Running zypper dup --dry-run to summarise solver-conflict state...")
+                        log_debug("Running dnf upgrade --assumeno to summarise solver-conflict state...")
                         conflict_cmd = [
                             "pkexec",
-                            "zypper",
-                            "--non-interactive",
-                            "dup",
-                            "--dry-run",
+                            "/usr/bin/dnf",
+                            "-q",
+                            "upgrade",
+                            "--assumeno",
                             *DUP_EXTRA_FLAGS,
                         ]
                         result = subprocess.run(
@@ -4347,25 +4421,25 @@ with open("/var/log/dnf-auto/download-status.txt", "w") as f:
 
                     if parsed_title:
                         title = f"{parsed_title} (manual decision needed)"
-                        message = parsed_message + "\\n\\nZypper needs your decision to resolve conflicts before these updates can be installed."
+                        message = parsed_message + "\n\nDNF needs your decision to resolve conflicts before these updates can be installed."
                     else:
                         # Fallback generic explanation
                         if exit_code is not None:
                             message = (
-                                f"Background download of updates hit a zypper solver error (exit code {exit_code}).\\n\\n"
-                                "Some packages may already be cached, but zypper needs your decision to continue."
+                                f"Background download of updates hit a dnf solver error (exit code {exit_code}).\\n\\n"\
+                                "Some packages may already be cached, but dnf needs your decision to continue."
                             )
                         else:
                             message = (
-                                "Background download of updates hit a zypper solver error.\\n\\n"
-                                "Some packages may already be cached, but zypper needs your decision to continue."
+                                "Background download of updates hit a dnf solver error.\\n\\n"\
+                                "Some packages may already be cached, but dnf needs your decision to continue."
                             )
 
                     # Always give clear instructions on what to do next.
                     message += (
-                        "\\n\\nOpen a terminal and run:\n"
-                        "  sudo zypper dup\n"
-                        "or click 'Install Now' to open the helper, then follow zypper's prompts to resolve the conflicts."
+                        "\\n\\nOpen a terminal and run:\n"\
+                        "  sudo dnf upgrade\\n"\
+                        "or click 'Install Now' to open the helper, then follow dnf's prompts to resolve the conflicts."
                     )
 
 action_script = os.path.expanduser("~/.local/bin/dnf-run-install")
@@ -4419,15 +4493,15 @@ n.set_hint("x-canonical-private-synchronous", GLib.Variant("s", "dnf-updates-con
         
         output = get_updates()
 
-        # If get_updates() failed with a real error (not just zypper lock), show error notification
+        # If get_updates() failed with a real error (not just a DNF lock), show error notification
         if output is None:
             log_error("Update check failed due to PolicyKit/authentication error")
             update_status("FAILED: Update check failed")
             err_title = "Update check failed"
             err_message = (
-                "The updater could not authenticate with PolicyKit.\n"
-                "This may be a configuration issue.\n\n"
-                "Try running 'pkexec zypper dup --dry-run' manually to test."
+                "The updater could not authenticate with PolicyKit.\\n"\
+                "This may be a configuration issue.\\n\\n"\
+                "Try running 'pkexec /usr/bin/dnf -q upgrade --assumeno' manually to test."
             )
             n = Notify.Notification.new(err_title, err_message, "dialog-error")
             n.set_timeout(30000)  # 30 seconds
@@ -4438,7 +4512,7 @@ n.set_hint("x-canonical-private-synchronous", GLib.Variant("s", "dnf-updates-con
 
         # Empty string means environment was unsafe and zypper was skipped.
         if not output or not output.strip():
-            log_info("No zypper run performed (environment not safe). Exiting.")
+            log_info("No dnf run performed (environment not safe). Exiting.")
             return
 
         title, message, snapshot, package_count = parse_output(output)
@@ -4555,6 +4629,10 @@ if __name__ == "__main__":
     main()
 EOF
 
+log_info "Configuring Python script paths..."
+sed -i "s|/var/log/dnf-auto|${LOG_DIR}|g" "${NOTIFY_SCRIPT_PATH}"
+sed -i "s|/etc/dnf-auto.conf|${CONFIG_FILE}|g" "${NOTIFY_SCRIPT_PATH}"
+
 chown "$SUDO_USER:$SUDO_USER" "${NOTIFY_SCRIPT_PATH}"
 chmod +x "${NOTIFY_SCRIPT_PATH}"
 log_success "Python notifier script created and made executable"
@@ -4635,13 +4713,13 @@ has_pkg_lock() {
         pid=$(cat "$DNF_LOCK_FILE" 2>/dev/null || echo "")
         if [ -n "$pid" ]; then
             if kill -0 "$pid" 2>/dev/null; then
-                # Double-check that this PID really looks like a zypper/YaST
+                # Double-check that this PID really looks like a DNF/PackageKit
                 # style process so we don't treat a reused PID as a live lock.
                 local comm cmd
                 comm=$(ps -p "$pid" -o comm= 2>/dev/null || echo "")
                 cmd=$(ps -p "$pid" -o args= 2>/dev/null || echo "")
                 if printf '%s\n%s\n' "$comm" "$cmd" | grep -qiE 'dnf|dnf-automatic|packagekitd'; then
-                        log "has_pkg_lock: package manager lock file $DNF_LOCK_FILE exists with live pid $pid (comm='$comm')"
+                    log "has_pkg_lock: package manager lock file $DNF_LOCK_FILE exists with live pid $pid (comm='$comm')"
                     return 0
                 fi
                 log "has_pkg_lock: ignoring non-dnf-looking process for lock file $DNF_LOCK_FILE (pid $pid, comm='$comm')"
@@ -4650,6 +4728,14 @@ has_pkg_lock() {
             fi
         else
             log "has_pkg_lock: package-manager lock file $DNF_LOCK_FILE present but empty"
+        fi
+    fi
+
+    # Also treat an actively held RPM database lock as a package-manager lock.
+    if [ -f "/var/lib/rpm/.rpm.lock" ] && command -v fuser >/dev/null 2>&1; then
+        if fuser "/var/lib/rpm/.rpm.lock" >/dev/null 2>&1; then
+            log "has_pkg_lock: RPM database lock /var/lib/rpm/.rpm.lock is held by another process"
+            return 0
         fi
     fi
 
@@ -4664,9 +4750,6 @@ has_pkg_lock() {
         local ypid
         ypid=$(pgrep -f -i 'packagekitd' | head -n1 || true)
         log "has_pkg_lock: detected running PackageKit process pid ${ypid:-unknown}"
-        return 0
-    fi
-    # No explicit zypp-refresh equivalent for dnf; rely on dnf and PackageKit above.
         return 0
     fi
 
@@ -5408,6 +5491,17 @@ fi
 # --- 11e. Apply SELinux contexts (Fedora) ---
 if command -v restorecon >/dev/null 2>&1; then
     log_info ">>> Applying SELinux contexts (restorecon)..."
+
+    # First, if semanage is available, register our custom paths so SELinux
+    # knows how to label them. This is idempotent and safe to run multiple times.
+    if command -v semanage >/dev/null 2>&1; then
+        log_info "Applying SELinux file contexts..."
+        # Tell SELinux that ${LOG_DIR} is a log directory hierarchy
+        semanage fcontext -a -t var_log_t "${LOG_DIR}(/.*)?" 2>/dev/null || true
+        # Tell SELinux that the helper binary is an executable bin_t
+        semanage fcontext -a -t bin_t "/usr/local/bin/dnf-auto-helper" 2>/dev/null || true
+    fi
+
     # Log directory and its contents
     restorecon -Rv "${LOG_DIR}" >> "${LOG_FILE}" 2>&1 || true
 
