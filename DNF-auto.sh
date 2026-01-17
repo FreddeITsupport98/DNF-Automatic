@@ -915,8 +915,8 @@ fi
 
 # Check 10: Status file exists
 log_debug "Checking status file..."
-if [ -f "/var/log/zypper-auto/download-status.txt" ]; then
-    CURRENT_STATUS=$(cat /var/log/zypper-auto/download-status.txt)
+if [ -f "/var/log/dnf-auto/download-status.txt" ]; then
+    CURRENT_STATUS=$(cat /var/log/dnf-auto/download-status.txt)
     log_success "✓ Status file exists (current: $CURRENT_STATUS)"
 else
     log_info "ℹ Status file will be created on first run"
@@ -1788,17 +1788,17 @@ cat << 'DLSCRIPT' > "$DOWNLOADER_SCRIPT"
 # DNF downloader with real-time progress tracking
 set -euo pipefail
 
-LOG_DIR="/var/log/zypper-auto"
+LOG_DIR="/var/log/dnf-auto"
 STATUS_FILE="$LOG_DIR/download-status.txt"
 START_TIME_FILE="$LOG_DIR/download-start-time.txt"
 CACHE_DIR="/var/cache/dnf"
 
-# Optional: read extra dup flags from /etc/zypper-auto.conf so users can
+# Optional: read extra dup flags from /etc/dnf-auto.conf so users can
 # tweak solver behaviour (e.g. --allow-vendor-change) without editing
 # this script directly.
-CONFIG_FILE="/etc/zypper-auto.conf"
+CONFIG_FILE="/etc/dnf-auto.conf"
 if [ -f "$CONFIG_FILE" ]; then
-    # shellcheck source=/etc/zypper-auto.conf
+    # shellcheck source=/etc/dnf-auto.conf
     . "$CONFIG_FILE"
 fi
 DUP_EXTRA_FLAGS="${DUP_EXTRA_FLAGS:-}"
@@ -1838,16 +1838,18 @@ trigger_notifier() {
     fi
     sudo -u "$user" \
         DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${uid}/bus" \
-        systemctl --user start zypper-notify-user.service \
+        systemctl --user start dnf-notify-user.service \
         >/dev/null 2>&1 || true
 }
 
-# Write status: refreshing
-# downloader doesn't spam errors when the user is running zypper/Yast.
+# Handle package-manager locks gracefully so we do not spam the logs or
+# mark the service failed when another updater (dnf/PackageKit) is running.
 handle_lock_or_fail() {
     local err_file="$1"
-    if grep -q "System management is locked" "$err_file" 2>/dev/null; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Zypper is locked by another process; skipping this downloader run (will retry on next timer)" >&2
+
+    # Common dnf/PackageKit lock messages
+    if grep -qiE 'System management is locked|Another app is currently holding the dnf lock|dnf is locked by another process|Existing lock' "$err_file" 2>/dev/null; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Package manager is locked by another process; skipping this downloader run (will retry on next timer)" >&2
         echo "idle" > "$STATUS_FILE"
         rm -f "$err_file"
         exit 0
@@ -2031,7 +2033,7 @@ ProtectSystem=full
 ProtectHome=read-only
 PrivateTmp=yes
 NoNewPrivileges=yes
-ReadWritePaths=/var/cache/zypp /var/log/zypper-auto
+ReadWritePaths=/var/cache/dnf /var/log/dnf-auto
 EOF
 log_success "Downloader service file created"
 
@@ -2072,12 +2074,12 @@ update_status "Creating cache cleanup service..."
 log_debug "Writing service file: ${CLEANUP_SERVICE_FILE}"
 cat << EOF > ${CLEANUP_SERVICE_FILE}
 [Unit]
-Description=Clean up old zypper cache packages
+Description=Clean up old DNF cache packages
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/find /var/cache/zypp/packages -type f -name '*.rpm' -mtime +30 -delete
-ExecStart=/usr/bin/find /var/cache/zypp/packages -type d -empty -delete
+ExecStart=/usr/bin/find /var/cache/dnf -type f -name '*.rpm' -mtime +30 -delete
+ExecStart=/usr/bin/find /var/cache/dnf -type d -empty -delete
 StandardOutput=append:${LOG_DIR}/service-logs/cleanup.log
 StandardError=append:${LOG_DIR}/service-logs/cleanup-error.log
 EOF
@@ -2125,13 +2127,13 @@ fi
 
 cat << EOF > ${VERIFY_SERVICE_FILE}
 [Unit]
-Description=Verify and auto-repair zypper-auto-helper installation
+Description=Verify and auto-repair dnf-auto-helper installation
 Wants=network-online.target
 After=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/zypper-auto-helper --verify
+ExecStart=/usr/local/bin/dnf-auto-helper --verify
 StandardOutput=append:${LOG_DIR}/service-logs/verify.log
 StandardError=append:${LOG_DIR}/service-logs/verify-error.log
 Restart=on-failure
@@ -2142,7 +2144,7 @@ ProtectSystem=full
 ProtectHome=read-only
 PrivateTmp=yes
 NoNewPrivileges=yes
-ReadWritePaths=${LOG_DIR} /run /var/run /var/cache/zypp
+ReadWritePaths=${LOG_DIR} /run /var/run /var/cache/dnf
 EOF
 log_success "Verification service file created"
 
@@ -2713,7 +2715,7 @@ from pathlib import Path
 DEBUG = os.getenv("ZNH_DEBUG", "").lower() in ("1", "true", "yes", "debug")
 
 # Logging setup
-LOG_DIR = Path.home() / ".local" / "share" / "zypper-notify"
+LOG_DIR = Path.home() / ".local" / "share" / "dnf-notify"
 LOG_FILE = LOG_DIR / "notifier-detailed.log"
 STATUS_FILE = LOG_DIR / "last-run-status.txt"
 HISTORY_FILE = LOG_DIR / "update-history.log"
@@ -2721,13 +2723,13 @@ MAX_LOG_SIZE = 5 * 1024 * 1024  # 5MB
 MAX_HISTORY_SIZE = 1 * 1024 * 1024  # 1MB
 
 # Cache directory
-CACHE_DIR = Path.home() / ".cache" / "zypper-notify"
+CACHE_DIR = Path.home() / ".cache" / "dnf-notify"
 CACHE_FILE = CACHE_DIR / "last_check.txt"
 SNOOZE_FILE = CACHE_DIR / "snooze_until.txt"
 CACHE_EXPIRY_MINUTES = 10
 
-# Global config path for zypper-auto-helper
-CONFIG_FILE = "/etc/zypper-auto.conf"
+# Global config path for dnf-auto-helper
+CONFIG_FILE = "/etc/dnf-auto.conf"
 # Cache and snooze configuration (overridable via environment, see systemd unit)
 def _int_env(name: str, default: int) -> int:
     raw = os.getenv(name)
@@ -3129,22 +3131,28 @@ def check_network_quality() -> tuple[bool, str]:
         return True, "Could not check network"
 
 
-def is_zypper_locked(stderr_text: str | None = None) -> bool:
-    """Best-effort detection of a zypper/libzypp lock.
+def is_package_manager_locked(stderr_text: str | None = None) -> bool:
+    """Best-effort detection of a dnf/PackageKit lock.
 
-    Checks both stderr text for the canonical message and the zypp
-    lockfile (/run/zypp.pid or /var/run/zypp.pid) plus a few common
-    lock-owner processes (zypper, YaST/y2base, zypp-refresh, etc.).
+    Checks stderr text for common lock messages and the dnf lock file
+    (/var/run/dnf.pid) plus a few common lock-owner processes
+    (dnf, dnf-automatic, packagekitd).
     """
-    KNOWN_LOCK_OWNERS = ("zypper", "yast", "y2base", "zypp", "packagekitd")
+    KNOWN_LOCK_OWNERS = ("dnf", "dnf-automatic", "packagekitd")
     try:
-        # If zypper already told us "System management is locked", trust that.
-        if stderr_text and "System management is locked" in stderr_text:
+        # If the tool already told us "System management is locked", trust that.
+        lower_err = (stderr_text or "").lower()
+        if any(tok in lower_err for tok in (
+            "system management is locked",
+            "another app is currently holding the dnf lock",
+            "dnf is locked by another process",
+            "existing lock",
+        )):
             return True
 
-        # Look at the canonical zypp lock files first; verify that the PID
-        # really belongs to a known zypper/YaST/zypp-style process.
-        for pid_file in ("/run/zypp.pid", "/var/run/zypp.pid"):
+        # Look at the canonical dnf lock file first; verify that the PID
+        # really belongs to a known dnf/PackageKit-style process.
+        for pid_file in ("/var/run/dnf.pid", "/run/dnf.pid"):
             try:
                 with open(pid_file, "r", encoding="utf-8") as f:
                     pid_str = f.read().strip()
@@ -3176,7 +3184,7 @@ def is_zypper_locked(stderr_text: str | None = None) -> bool:
             if candidate and any(tok in candidate for tok in KNOWN_LOCK_OWNERS):
                 return True
 
-        # Fallback: scan the process list for any obviously zypper/YaST/zypp
+        # Fallback: scan the process list for any obviously dnf/PackageKit
         # style processes even if the lock file is missing or stale.
         try:
             ps_out = subprocess.check_output(
@@ -3196,7 +3204,7 @@ def is_zypper_locked(stderr_text: str | None = None) -> bool:
 # Rotate log at startup if needed
 rotate_log_if_needed()
 log_info("=" * 60)
-log_info("Zypper Notify Updater started")
+log_info("DNF Notify Updater started")
 update_status("Starting update check...")
 
 try:
@@ -3434,7 +3442,7 @@ def is_metered() -> bool:
 
 
 # --- Environment change tracking ---
-ENV_STATE_DIR = os.path.expanduser("~/.cache/zypper-notify")
+ENV_STATE_DIR = os.path.expanduser("~/.cache/dnf-notify")
 ENV_STATE_FILE = os.path.join(ENV_STATE_DIR, "env_state.txt")
 LAST_NOTIFICATION_FILE = os.path.join(ENV_STATE_DIR, "last_notification.txt")
 
@@ -3898,7 +3906,7 @@ def on_action(notification, action_id, user_data):
 def main():
     try:
         log_debug("Initializing notification system...")
-        Notify.init("zypper-updater")
+        Notify.init("dnf-updater")
         
         # Check if updates are snoozed FIRST - skip all notifications if snoozed
         if check_snoozed():
@@ -3906,7 +3914,7 @@ def main():
             return
         
         # Check if downloader is actively downloading updates
-        download_status_file = "/var/log/zypper-auto/download-status.txt"
+        download_status_file = "/var/log/dnf-auto/download-status.txt"
         if os.path.exists(download_status_file):
             try:
                 # Treat very old statuses as stale so we don't get stuck forever
@@ -4019,7 +4027,7 @@ def main():
                             # Common settings for the progress notification
                             n.set_timeout(5000)  # 5 seconds
                             # Set hint to replace previous download status notifications
-                            n.set_hint("x-canonical-private-synchronous", GLib.Variant("s", "zypper-download-status"))
+                            n.set_hint("x-canonical-private-synchronous", GLib.Variant("s", "dnf-download-status"))
                             n.show()
 
                             # Keep updating the same notification until the downloader
@@ -4205,12 +4213,12 @@ def main():
                                 )
                                 n.set_timeout(0)  # 0 = persist until user interaction
                                 n.set_urgency(Notify.Urgency.NORMAL)  # Normal urgency
-                                n.set_hint("x-canonical-private-synchronous", GLib.Variant("s", "zypper-download-complete"))
+n.set_hint("x-canonical-private-synchronous", GLib.Variant("s", "dnf-download-complete"))
                                 n.show()
                                 time.sleep(0.1)  # Wait a bit before continuing
                                 # Clear the complete status so it doesn't show again
                                 try:
-                                    with open("/var/log/zypper-auto/download-status.txt", "w") as f:
+with open("/var/log/dnf-auto/download-status.txt", "w") as f:
                                         f.write("idle")
                                 except Exception:
                                     pass
@@ -4239,7 +4247,7 @@ def main():
                         "network-error",
                     )
                     n.set_timeout(30000)
-                    n.set_hint("x-canonical-private-synchronous", GLib.Variant("s", "zypper-network-error"))
+                    n.set_hint("x-canonical-private-synchronous", GLib.Variant("s", "dnf-network-error"))
                     n.set_urgency(Notify.Urgency.NORMAL)
                     n.show()
 
@@ -4269,7 +4277,7 @@ def main():
                         "dialog-warning",
                     )
                     n.set_timeout(30000)
-                    n.set_hint("x-canonical-private-synchronous", GLib.Variant("s", "zypper-repo-error"))
+                    n.set_hint("x-canonical-private-synchronous", GLib.Variant("s", "dnf-repo-error"))
                     n.set_urgency(Notify.Urgency.NORMAL)
                     n.show()
 
@@ -4370,7 +4378,7 @@ action_script = os.path.expanduser("~/.local/bin/dnf-run-install")
                     # Persistent notification, high urgency.
                     n.set_timeout(0)
                     n.set_urgency(Notify.Urgency.CRITICAL)
-                    n.set_hint("x-canonical-private-synchronous", GLib.Variant("s", "zypper-updates-conflict"))
+n.set_hint("x-canonical-private-synchronous", GLib.Variant("s", "dnf-updates-conflict"))
 
                     # Add the same actions as the normal "updates ready" notification.
                     n.add_action("install", "Install Now", on_action, action_script)
@@ -4441,7 +4449,7 @@ action_script = os.path.expanduser("~/.local/bin/dnf-run-install")
             
             # Check if we already showed "no updates" notification
             last_notification = _read_last_notification()
-            no_updates_key = "No updates found|Your system is already up to date."
+            no_updates_key = "No updates found|Your system is already up to date. (dnf)"
             
             if (not NO_UPDATES_REMINDER_REPEAT_ENABLED) and last_notification == no_updates_key:
                 log_info("'No updates' notification already shown, skipping duplicate (NO_UPDATES_REMINDER_REPEAT_ENABLED=false)")
@@ -4457,7 +4465,7 @@ action_script = os.path.expanduser("~/.local/bin/dnf-run-install")
                 "dialog-information",
             )
             n.set_timeout(10000)  # 10 seconds
-            n.set_hint("x-canonical-private-synchronous", GLib.Variant("s", "zypper-no-updates"))
+            n.set_hint("x-canonical-private-synchronous", GLib.Variant("s", "dnf-no-updates"))
             n.show()
             return
         
@@ -4497,7 +4505,7 @@ action_script = os.path.expanduser("~/.local/bin/dnf-run-install")
         _write_last_notification(title, message)
 
         # Get the path to the action script
-action_script = os.path.expanduser("~/.local/bin/dnf-run-install")
+        action_script = os.path.expanduser("~/.local/bin/dnf-run-install")
 
         # Create the notification with a stable ID so it replaces the previous one
         log_debug(f"Creating notification: {title}")
@@ -4506,8 +4514,8 @@ action_script = os.path.expanduser("~/.local/bin/dnf-run-install")
         n.set_urgency(Notify.Urgency.CRITICAL) # Make it more noticeable
         
         # Set a consistent ID so notifications replace each other
-        n.set_hint("desktop-entry", GLib.Variant("s", "zypper-updater"))
-        n.set_hint("x-canonical-private-synchronous", GLib.Variant("s", "zypper-updates"))
+        n.set_hint("desktop-entry", GLib.Variant("s", "dnf-updater"))
+        n.set_hint("x-canonical-private-synchronous", GLib.Variant("s", "dnf-updates"))
 
         # Add action buttons with shorter labels
         n.add_action("install", "Install Now", on_action, action_script)
@@ -4539,7 +4547,7 @@ action_script = os.path.expanduser("~/.local/bin/dnf-run-install")
         log_error(f"Traceback: {traceback.format_exc()}")
     finally:
         log_info("Shutting down notification system")
-Notify.uninit()
+        Notify.uninit()
         log_info("DNF Notify Updater finished")
         log_info("=" * 60)
 
@@ -5395,6 +5403,67 @@ if cp "$INSTALLER_SCRIPT_PATH" "$COMMAND_PATH" >> "${LOG_FILE}" 2>&1; then
     log_info "You can now run: dnf-auto-helper --help"
 else
     log_error "Warning: Could not install command (non-fatal)"
+fi
+
+# --- 11e. Apply SELinux contexts (Fedora) ---
+if command -v restorecon >/dev/null 2>&1; then
+    log_info ">>> Applying SELinux contexts (restorecon)..."
+    # Log directory and its contents
+    restorecon -Rv "${LOG_DIR}" >> "${LOG_FILE}" 2>&1 || true
+
+    # Systemd unit files
+    restorecon -v "${DL_SERVICE_FILE}" "${DL_TIMER_FILE}" \
+        "${CLEANUP_SERVICE_FILE}" "${CLEANUP_TIMER_FILE}" \
+        "${VERIFY_SERVICE_FILE}" "${VERIFY_TIMER_FILE}" \
+        >> "${LOG_FILE}" 2>&1 || true
+
+    # Helper binaries and scripts
+    restorecon -v \
+        "/usr/local/bin/dnf-auto-helper" \
+        "${DOWNLOADER_SCRIPT}" \
+        "${INSTALL_SCRIPT_PATH}" \
+        "${VIEW_CHANGES_SCRIPT_PATH}" \
+        "${SOAR_INSTALL_HELPER_PATH}" \
+        >> "${LOG_FILE}" 2>&1 || true
+fi
+
+# --- 11f. Install Polkit rule for dnf-auto-helper (optional) ---
+if [ -d /etc/polkit-1/rules.d ]; then
+    POLKIT_RULES_FILE="/etc/polkit-1/rules.d/90-dnf-auto-helper.rules"
+    log_info ">>> Installing Polkit rule for dnf-auto-helper preview commands..."
+    update_status "Installing Polkit rule for dnf preview..."
+
+    cat << 'EOF' > "$POLKIT_RULES_FILE"
+// Allow members of the wheel group to run safe, non-interactive dnf
+// preview commands used by dnf-auto-helper without an authentication
+// prompt. This covers:
+//   pkexec dnf -q makecache
+//   pkexec dnf -q upgrade --assumeno
+polkit.addRule(function(action, subject) {
+    if (action.id == "org.freedesktop.policykit.exec" &&
+        action.lookup("command") == "/usr/bin/dnf" &&
+        subject.isInGroup("wheel")) {
+        var argv = action.lookup("argv");
+        if (!argv) {
+            return polkit.Result.NOT_HANDLED;
+        }
+        // Expect argv like: ["/usr/bin/dnf", "-q", "makecache", ...]
+        if (argv.length >= 3 && argv[1] == "-q") {
+            if (argv[2] == "makecache") {
+                return polkit.Result.YES;
+            }
+            if (argv[2] == "upgrade" && argv.indexOf("--assumeno") >= 0) {
+                return polkit.Result.YES;
+            }
+        }
+    }
+    return polkit.Result.NOT_HANDLED;
+});
+EOF
+
+    chmod 644 "$POLKIT_RULES_FILE" 2>/dev/null || true
+else
+    log_info "Polkit rules directory /etc/polkit-1/rules.d not found; skipping Polkit rule installation"
 fi
 
 # --- 12. Final self-check ---
