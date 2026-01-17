@@ -951,8 +951,8 @@ log_debug "[12/12] Checking root filesystem free space..."
 ROOT_FREE_MB=$(df -Pm / 2>/dev/null | awk 'NR==2 {print $4}')
 if [ -n "$ROOT_FREE_MB" ] && [ "$ROOT_FREE_MB" -lt 1024 ]; then
     log_error "⚠ Warning: Low free space on / (only ${ROOT_FREE_MB}MB available; minimum 1024MB recommended)"
-    log_info "  → Attempting to free space with 'zypper clean --all'..."
-    if zypper --non-interactive clean --all >> "${LOG_FILE}" 2>&1; then
+    log_info "  → Attempting to free space with 'dnf clean all'..."
+    if dnf clean all >> "${LOG_FILE}" 2>&1; then
         sleep 1
         ROOT_FREE_MB_AFTER=$(df -Pm / 2>/dev/null | awk 'NR==2 {print $4}')
         if [ -n "$ROOT_FREE_MB_AFTER" ] && [ "$ROOT_FREE_MB_AFTER" -ge 1024 ]; then
@@ -962,7 +962,7 @@ if [ -n "$ROOT_FREE_MB" ] && [ "$ROOT_FREE_MB" -lt 1024 ]; then
             VERIFICATION_FAILED=1
         fi
     else
-        log_error "  ✗ 'zypper clean --all' failed; please free space manually"
+        log_error "  ✗ 'dnf clean all' failed; please free space manually"
         VERIFICATION_FAILED=1
     fi
 else
@@ -1099,7 +1099,7 @@ run_soar_install_only() {
 
     if ! command -v curl >/dev/null 2>&1; then
         log_error "curl is required to install Soar but is not installed."
-        echo "Install curl with: sudo zypper install curl" | tee -a "${LOG_FILE}"
+        echo "Install curl with: sudo dnf install curl" | tee -a "${LOG_FILE}"
         return 1
     fi
 
@@ -1345,16 +1345,16 @@ run_brew_install_only() {
 
     # Ensure basic prerequisites for the installer (inline to avoid ordering issues)
     if ! command -v curl >/dev/null 2>&1; then
-        log_info "curl is required for the Homebrew installer. Installing via zypper..."
-        if ! zypper -n install curl >> "${LOG_FILE}" 2>&1; then
+        log_info "curl is required for the Homebrew installer. Installing via dnf..."
+        if ! dnf -y install curl >> "${LOG_FILE}" 2>&1; then
             log_error "Failed to install curl. Please install it manually and re-run with --brew."
             return 1
         fi
     fi
 
     if ! command -v git >/dev/null 2>&1; then
-        log_info "git is required for Homebrew operations. Installing via zypper..."
-        if ! zypper -n install git >> "${LOG_FILE}" 2>&1; then
+        log_info "git is required for Homebrew operations. Installing via dnf..."
+        if ! dnf -y install git >> "${LOG_FILE}" 2>&1; then
             log_error "Failed to install git. Please install it manually and re-run with --brew."
             return 1
         fi
@@ -1438,21 +1438,21 @@ run_pipx_helper_only() {
         echo "pipx is already installed for user $SUDO_USER." | tee -a "${LOG_FILE}"
     else
         echo "pipx is not installed yet for user $SUDO_USER." | tee -a "${LOG_FILE}"
-        echo "The recommended way on openSUSE is:" | tee -a "${LOG_FILE}"
-        echo "  sudo zypper install python313-pipx" | tee -a "${LOG_FILE}"
+        echo "On Fedora the recommended way is:" | tee -a "${LOG_FILE}"
+        echo "  sudo dnf install pipx" | tee -a "${LOG_FILE}"
         echo "" | tee -a "${LOG_FILE}"
 
-        read -p "May I install python313-pipx for you now via zypper? [y/N]: " -r REPLY
+        read -p "May I install pipx for you now via dnf? [y/N]: " -r REPLY
         echo
         if [[ $REPLY =~ ^[Yy]$ ]]; then
-            log_info "Installing python313-pipx via zypper..."
-            update_status "Installing dependency: python313-pipx"
-            if ! zypper -n install python313-pipx >> "${LOG_FILE}" 2>&1; then
-                log_error "Failed to install python313-pipx. Please install it manually and re-run with --pip-package."
-                update_status "FAILED: Could not install python313-pipx"
+            log_info "Installing pipx via dnf..."
+            update_status "Installing dependency: pipx"
+            if ! dnf -y install pipx >> "${LOG_FILE}" 2>&1; then
+                log_error "Failed to install pipx. Please install it manually and re-run with --pip-package."
+                update_status "FAILED: Could not install pipx"
                 return 1
             fi
-            log_success "Successfully installed python313-pipx"
+            log_success "Successfully installed pipx"
 
             # Best-effort: ensure pipx adds its binaries to the user's PATH
             if sudo -u "$SUDO_USER" command -v pipx >/dev/null 2>&1; then
@@ -1634,7 +1634,7 @@ check_and_install() {
             log_info "Installing $package..."
             update_status "Installing dependency: $package"
             
-            if ! sudo zypper install -y "$package" >> "${LOG_FILE}" 2>&1; then
+            if ! sudo dnf install -y "$package" >> "${LOG_FILE}" 2>&1; then
                 log_error "Failed to install $package. Please install it manually and re-run this script."
                 update_status "FAILED: Could not install $package"
                 exit 1
@@ -1694,10 +1694,10 @@ if ! python3 -c "import gi" &> /dev/null; then
     log_debug "User response: $REPLY"
     
     if [[ $REPLY =~ ^[Yy]$ ]]; then
-        log_info "Installing python3-gobject..."
+        log_info "Installing python3-gobject via dnf..."
         update_status "Installing python3-gobject..."
         
-        if ! sudo zypper install -y "python3-gobject" >> "${LOG_FILE}" 2>&1; then
+        if ! sudo dnf install -y "python3-gobject" >> "${LOG_FILE}" 2>&1; then
             log_error "Failed to install python3-gobject. Please install it manually and re-run this script."
             update_status "FAILED: Could not install python3-gobject"
             exit 1
@@ -1785,13 +1785,13 @@ DOWNLOADER_SCRIPT="/usr/local/bin/zypper-download-with-progress"
 log_debug "Creating downloader script with progress tracking: $DOWNLOADER_SCRIPT"
 cat << 'DLSCRIPT' > "$DOWNLOADER_SCRIPT"
 #!/bin/bash
-# Zypper downloader with real-time progress tracking
+# DNF downloader with real-time progress tracking
 set -euo pipefail
 
 LOG_DIR="/var/log/zypper-auto"
 STATUS_FILE="$LOG_DIR/download-status.txt"
 START_TIME_FILE="$LOG_DIR/download-start-time.txt"
-CACHE_DIR="/var/cache/zypp/packages"
+CACHE_DIR="/var/cache/dnf"
 
 # Optional: read extra dup flags from /etc/zypper-auto.conf so users can
 # tweak solver behaviour (e.g. --allow-vendor-change) without editing
@@ -1858,10 +1858,10 @@ handle_lock_or_fail() {
 echo "refreshing" > "$STATUS_FILE"
 date +%s > "$START_TIME_FILE"
 
-# Refresh repos
+# Refresh package metadata (equivalent to "zypper refresh")
 REFRESH_ERR=$(mktemp)
-if ! /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 /usr/bin/zypper --non-interactive --no-gpg-checks refresh >/dev/null 2>"$REFRESH_ERR"; then
-    # If another zypper instance holds the lock, handle_lock_or_fail will
+if ! /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 /usr/bin/dnf -q makecache >/dev/null 2>"$REFRESH_ERR"; then
+    # If another package manager instance holds the lock, handle_lock_or_fail will
     # mark the status as idle and exit 0 so we do not treat it as an
     # error here.
     handle_lock_or_fail "$REFRESH_ERR"
@@ -1884,18 +1884,18 @@ if ! /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 /usr/bin/zypper --non-interact
 fi
 rm -f "$REFRESH_ERR"
 
-# Get update info
+# Get update info using a non-interactive dnf transaction preview
 DRY_OUTPUT=$(mktemp)
 DRY_ERR=$(mktemp)
-if ! /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 /usr/bin/zypper --non-interactive dup --dry-run > "$DRY_OUTPUT" 2>"$DRY_ERR"; then
+if ! /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 /usr/bin/dnf -q upgrade --assumeno $DUP_EXTRA_FLAGS > "$DRY_OUTPUT" 2>"$DRY_ERR"; then
     # Handle lock first; if it is just a lock, this will mark status idle
     # and exit 0 so we do not need to set an additional error state.
     handle_lock_or_fail "$DRY_ERR"
 
-    # Non-lock failure at the dry-run stage – mirror the refresh handling
+    # Non-lock failure at the preview stage – mirror the refresh handling
     # so the notifier can display a meaningful error notification.
     if grep -qi "could not resolve host" "$DRY_ERR" || \
-       grep -qi "Failed to retrieve new repository metadata" "$DRY_ERR"; then
+       grep -qi "Failed to synchronize cache" "$DRY_ERR"; then
         echo "error:network" > "$STATUS_FILE"
     else
         echo "error:repo" > "$STATUS_FILE"
@@ -1907,34 +1907,26 @@ if ! /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 /usr/bin/zypper --non-interact
 fi
 rm -f "$DRY_ERR"
 
-if ! grep -q "packages to upgrade" "$DRY_OUTPUT"; then
+# Extract package count from the dnf transaction summary, e.g.:
+#   Upgrade  10 Packages
+PKG_COUNT=$(grep -iE 'Upgrade[[:space:]]+[0-9]+[[:space:]]+Package' "$DRY_OUTPUT" \
+    | head -1 \
+    | awk '{for (i=1;i<=NF;i++) if ($i ~ /^[0-9]+$/) {print $i; break}}')
+
+# If no upgrades are listed, nothing to do
+if [ -z "$PKG_COUNT" ] || [ "$PKG_COUNT" -eq 0 ] 2>/dev/null; then
     echo "idle" > "$STATUS_FILE"
     rm -f "$DRY_OUTPUT"
     exit 0
 fi
 
-# Extract package count and size
-PKG_COUNT=$(grep -oP "\d+(?= packages to upgrade)" "$DRY_OUTPUT" | head -1)
-DOWNLOAD_SIZE=$(grep -oP "Overall download size: ([\d.]+ [KMG]iB)" "$DRY_OUTPUT" | grep -oP "[\d.]+ [KMG]iB" || echo "unknown")
-
-# Detect case where everything is already cached so we don't show a fake
-# download progress bar. In that situation zypper's summary contains a
-# line similar to:
-#   0 B  |  -   88.3 MiB  already in cache
-if grep -q "already in cache" "$DRY_OUTPUT" && \
-   grep -qE "^[[:space:]]*0 B[[:space:]]*\\|" "$DRY_OUTPUT"; then
-    # All data is already in the local cache; mark as a completed
-    # download with 0 newly-downloaded packages and skip the
-    # --download-only pass entirely.
-    echo "complete:0:0" > "$STATUS_FILE"
-    trigger_notifier
-    rm -f "$DRY_OUTPUT"
-    exit 0
-fi
+# Extract total download size, e.g. "120 M" or "1.2 G"
+DOWNLOAD_SIZE=$(grep -i "Total download size:" "$DRY_OUTPUT" | head -1 | sed -E 's/.*Total download size:[[:space:]]*//')
+[ -z "$DOWNLOAD_SIZE" ] && DOWNLOAD_SIZE="unknown"
 
 rm -f "$DRY_OUTPUT"
 
-# Count packages before download
+# Count packages before download (approximate progress tracking)
 BEFORE_COUNT=$(find "$CACHE_DIR" -name "*.rpm" 2>/dev/null | wc -l)
 
 # Write initial downloading status so the tracker loop sees it immediately
@@ -1974,14 +1966,14 @@ if [ "$DOWNLOADER_DOWNLOAD_MODE" = "detect-only" ]; then
 fi
 
 # Do the actual download. We intentionally ignore most non-zero exit codes so
-# that partial downloads remain in the cache even if zypper encounters solver
+# that partial downloads remain in the cache even if dnf encounters solver
 # problems that require manual intervention later. We still special-case the
-# lock error to avoid noisy logs when another zypper instance is running.
+# lock error to avoid noisy logs when another package manager instance is running.
 set +e
 DL_ERR=$(mktemp)
-/usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 /usr/bin/zypper --non-interactive --no-gpg-checks dup --download-only $DUP_EXTRA_FLAGS >/dev/null 2>&1
-ZYP_RET=$?
-if [ $ZYP_RET -ne 0 ]; then
+/usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 /usr/bin/dnf -q upgrade --downloadonly -y $DUP_EXTRA_FLAGS >/dev/null 2>"$DL_ERR"
+DNF_RET=$?
+if [ $DNF_RET -ne 0 ]; then
     handle_lock_or_fail "$DL_ERR"
 fi
 rm -f "$DL_ERR"
@@ -2002,14 +1994,14 @@ DURATION=$((END_TIME - START_TIME))
 
 # Decide final status:
 #  - If we actually downloaded new packages, mark as complete
-#  - If nothing was downloaded but zypper returned an error, mark an error
+#  - If nothing was downloaded but dnf returned an error, mark an error
 #    so the notifier can tell the user that manual intervention is required
 #  - Otherwise, leave the previous status (e.g. idle or complete:0:0)
 if [ $ACTUAL_DOWNLOADED -gt 0 ]; then
     echo "complete:$DURATION:$ACTUAL_DOWNLOADED" > "$STATUS_FILE"
     trigger_notifier
-elif [ $ZYP_RET -ne 0 ]; then
-    echo "error:solver:$ZYP_RET" > "$STATUS_FILE"
+elif [ $DNF_RET -ne 0 ]; then
+    echo "error:solver:$DNF_RET" > "$STATUS_FILE"
 fi
 
 DLSCRIPT
@@ -2204,8 +2196,7 @@ ZYPPER_WRAPPER_PATH="$USER_BIN_DIR/zypper-with-ps"
 log_debug "Writing zypper wrapper to: $ZYPPER_WRAPPER_PATH"
 cat << 'EOF' > "$ZYPPER_WRAPPER_PATH"
 #!/usr/bin/env bash
-# Zypper wrapper that automatically runs 'zypper ps -s' after 'zypper dup'
-# This shows which services need restarting after updates
+# Wrapper that runs DNF for system updates and shows which services need restarting
 
 # Load feature toggles from the same config used by the installer.
 CONFIG_FILE="/etc/zypper-auto.conf"
@@ -2223,49 +2214,40 @@ if [ -r "$CONFIG_FILE" ]; then
 fi
 
 # Helper to detect whether system management is currently locked by
-# zypp/zypper (e.g. YaST, another zypper, systemd-zypp-refresh, etc.).
-ZYPP_LOCK_FILE="/run/zypp.pid"
+# another package manager (dnf, PackageKit, etc.).
+DNF_LOCK_FILE="/var/run/dnf.pid"
 
-has_zypp_lock() {
-    # Prefer the zypp.pid lock file, which is what YaST/zypper use.
-    if [ -f "$ZYPP_LOCK_FILE" ]; then
+has_pkg_lock() {
+    # Prefer the dnf.pid lock file when present.
+    if [ -f "$DNF_LOCK_FILE" ]; then
         local pid
-        pid=$(cat "$ZYPP_LOCK_FILE" 2>/dev/null || echo "")
+        pid=$(cat "$DNF_LOCK_FILE" 2>/dev/null || echo "")
         if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-            # Best-effort check that the recorded PID really looks like a
-            # zypper/YaST/zypp-related process and not some unrelated PID
-            # that re-used the number.
             local comm cmd
             comm=$(ps -p "$pid" -o comm= 2>/dev/null || echo "")
             cmd=$(ps -p "$pid" -o args= 2>/dev/null || echo "")
-            if printf '%s\n%s\n' "$comm" "$cmd" | grep -qiE 'zypper|yast|y2base|zypp|packagekitd'; then
+            if printf '%s\n%s\n' "$comm" "$cmd" | grep -qiE 'dnf|dnf-automatic|packagekitd'; then
                 return 0
             fi
-            # If the process is alive but not obviously zypper/YaST, treat the
-            # lock file as stale and fall through to the process scan below.
         fi
     fi
 
-    # Fallback: any obviously zypper/YaST/zypp-related process. This is a
-    # broader net than just "zypper" so we also catch YaST and zypp-refresh.
-    if pgrep -x zypper >/dev/null 2>&1; then
+    # Fallback: any obviously dnf/PackageKit related process.
+    if pgrep -x dnf >/dev/null 2>&1; then
         return 0
     fi
-    if pgrep -f -i 'yast' >/dev/null 2>&1; then
-        return 0
-    fi
-    if pgrep -f 'zypp.*refresh' >/dev/null 2>&1; then
+    if pgrep -f -i 'packagekitd' >/dev/null 2>&1; then
         return 0
     fi
 
     return 1
 }
 
-# Check if we're running 'dup', 'dist-upgrade' or 'update'
+# Check if we're running an update-style command
 STATUS_DIR="/var/log/zypper-auto"
 STATUS_FILE="$STATUS_DIR/download-status.txt"
 
-if [[ "$*" == *"dup"* ]] || [[ "$*" == *"dist-upgrade"* ]] || [[ "$*" == *"update"* ]]; then
+if [[ "$*" == *"dup"* ]] || [[ "$*" == *"dist-upgrade"* ]] || [[ "$*" == *"update"* ]] || [[ "$*" == *"upgrade"* ]]; then
     # For interactive runs, publish a best-effort "downloading" status so the
     # desktop notifier can show a progress bar while the user is running
     # zypper manually. We don't know the package count in advance here, so we
@@ -2273,43 +2255,47 @@ if [[ "$*" == *"dup"* ]] || [[ "$*" == *"dist-upgrade"* ]] || [[ "$*" == *"updat
     sudo mkdir -p "$STATUS_DIR" >/dev/null 2>&1 || true
     sudo bash -c "echo 'downloading:0:manual:0:0' > '$STATUS_FILE'" >/dev/null 2>&1 || true
 
-    # Before running zypper, respect the global system management lock and
+    # Before running dnf, respect the global system management lock and
     # retry a few times with increasing delays so the user can see that we
     # are waiting instead of failing immediately.
     max_attempts=${LOCK_RETRY_MAX_ATTEMPTS:-10}
     base_delay=${LOCK_RETRY_INITIAL_DELAY_SECONDS:-1}
     attempt=1
-    while has_zypp_lock && [ "$attempt" -le "$max_attempts" ]; do
+    while has_pkg_lock && [ "$attempt" -le "$max_attempts" ]; do
         delay=$((base_delay * attempt))
         echo ""
-        echo "System management is currently locked by another update tool (zypper/YaST/PackageKit)."
+        echo "System management is currently locked by another update tool (dnf/PackageKit)."
         echo "Retry $attempt/$max_attempts: waiting $delay second(s) for the other updater to finish..."
         sleep "$delay"
         attempt=$((attempt + 1))
     done
 
     # After retries, if a lock is still present, show a clear message and exit
-    # cleanly instead of letting zypper print the raw lock error.
-    if has_zypp_lock; then
+    # cleanly instead of letting dnf print the raw lock error.
+    if has_pkg_lock; then
         echo ""
         echo "System management is still locked by another update tool."
-        echo "Close that other update tool (or wait for it to finish), then run this zypper command again."
+        echo "Close that other update tool (or wait for it to finish), then run this update command again."
         echo ""
         # Clear the manual downloading state so the notifier does not show a
-        # stuck progress bar when we never actually ran zypper.
+        # stuck progress bar when we never actually ran dnf.
         sudo bash -c "echo 'idle' > '$STATUS_FILE'" >/dev/null 2>&1 || true
         exit 1
     fi
 
-    # Run the actual zypper command
-    sudo /usr/bin/zypper "$@"
+    # Run the actual dnf command (map common zypper update invocations to dnf upgrade)
+    if [[ "$*" == *"dup"* ]] || [[ "$*" == *"dist-upgrade"* ]]; then
+        sudo /usr/bin/dnf upgrade -y
+    else
+        sudo /usr/bin/dnf "$@"
+    fi
     EXIT_CODE=$?
 
     # Clear the manual downloading state so the notifier stops showing
     # a progress bar once the interactive session has finished.
     sudo bash -c "echo 'idle' > '$STATUS_FILE'" >/dev/null 2>&1 || true
 
-    # Always run Flatpak and Snap updates after dup, even if dup had no updates or failed
+    # Always run Flatpak and Snap updates after an upgrade, even if the upgrade had no updates or failed
     echo ""
     echo "=========================================="
     echo "  Flatpak Updates"
@@ -2325,7 +2311,7 @@ if [[ "$*" == *"dup"* ]] || [[ "$*" == *"dist-upgrade"* ]] || [[ "$*" == *"updat
             fi
         else
             echo "⚠️  Flatpak is not installed - skipping Flatpak updates."
-            echo "   To install: sudo zypper install flatpak"
+            echo "   To install: sudo dnf install flatpak"
         fi
     else
         echo "ℹ️  Flatpak updates are disabled in /etc/zypper-auto.conf (ENABLE_FLATPAK_UPDATES=false)."
@@ -2346,7 +2332,7 @@ if [[ "$*" == *"dup"* ]] || [[ "$*" == *"dist-upgrade"* ]] || [[ "$*" == *"updat
             fi
         else
             echo "⚠️  Snapd is not installed - skipping Snap updates."
-            echo "   To install: sudo zypper install snapd"
+            echo "   To install: sudo dnf install snapd"
             echo "   Then enable: sudo systemctl enable --now snapd"
         fi
     else
@@ -2501,12 +2487,18 @@ if [[ "$*" == *"dup"* ]] || [[ "$*" == *"dist-upgrade"* ]] || [[ "$*" == *"updat
     echo "Checking which services need to be restarted..."
     echo ""
     
-    # Run zypper ps -s to show services using old libraries
-    ZYPPER_PS_OUTPUT=$(sudo /usr/bin/zypper ps -s 2>/dev/null || true)
-    echo "$ZYPPER_PS_OUTPUT"
+    # On Fedora, use 'needs-restarting' (from dnf-plugins-core) to show
+    # services and processes using old libraries, if available.
+    if command -v needs-restarting >/dev/null 2>&1; then
+        NEEDS_OUTPUT=$(sudo needs-restarting 2>/dev/null || true)
+        echo "$NEEDS_OUTPUT"
+    else
+        NEEDS_OUTPUT=""
+        echo "'needs-restarting' not found. Install 'dnf-plugins-core' for detailed restart information."
+    fi
     
-    # Check if there are any running processes
-    if echo "$ZYPPER_PS_OUTPUT" | grep -q "running processes"; then
+    # Check if there are any running processes that require restart
+    if [ -n "$NEEDS_OUTPUT" ]; then
         echo ""
         echo "ℹ️  Services listed above are using old library versions."
         echo ""
@@ -2525,8 +2517,8 @@ if [[ "$*" == *"dup"* ]] || [[ "$*" == *"dist-upgrade"* ]] || [[ "$*" == *"updat
     
     exit $EXIT_CODE
 else
-    # Not a dup command, just run zypper normally
-    sudo /usr/bin/zypper "$@"
+    # Not an update-style command, just pass through to dnf
+    sudo /usr/bin/dnf "$@"
 fi
 EOF
 chown "$SUDO_USER:$SUDO_USER" "$ZYPPER_WRAPPER_PATH"
@@ -3580,12 +3572,12 @@ def is_safe() -> bool:
 
 
 def get_updates():
-    """Run zypper and return the output.
+    """Run dnf and return the output.
 
     Returns:
-        - stdout string from "zypper dup --dry-run" when environment is safe
-        - "" (empty string) if environment is not safe and we skip zypper
-        - None if zypper/PolicyKit fails
+        - stdout string from a non-interactive "dnf upgrade --assumeno" when environment is safe
+        - "" (empty string) if environment is not safe and we skip dnf
+        - None if dnf/PolicyKit fails
     """
     log_info("Starting update check...")
     try:
@@ -3593,39 +3585,39 @@ def get_updates():
 
         if not safe:
             # Environment not safe (battery or metered). We already showed
-            # an environment change notification, so just skip zypper.
-            log_info("Environment not safe for background updates; skipping zypper.")
+            # an environment change notification, so just skip dnf.
+            log_info("Environment not safe for background updates; skipping dnf.")
             return ""
 
         log_info("Safe to refresh. Running full check...")
-        update_status("Running zypper refresh...")
-        log_debug("Executing: pkexec zypper refresh")
-        
+        update_status("Running dnf makecache (refreshing metadata)...")
+        log_debug("Executing: pkexec dnf -q makecache")
+
         subprocess.run(
-            ["pkexec", "zypper", "--non-interactive", "--no-gpg-checks", "refresh"],
+            ["pkexec", "dnf", "-q", "makecache"],
             check=True,
             capture_output=True,
         )
-        log_info("Zypper refresh completed successfully")
+        log_info("dnf makecache completed successfully")
 
-        update_status("Running zypper dup --dry-run...")
-        log_debug("Executing: pkexec zypper dup --dry-run")
+        update_status("Running dnf upgrade --assumeno (preview)...")
+        log_debug("Executing: pkexec dnf -q upgrade --assumeno")
 
-        dup_cmd = ["pkexec", "zypper", "--non-interactive", "dup", "--dry-run", *DUP_EXTRA_FLAGS]
+        dup_cmd = ["pkexec", "dnf", "-q", "upgrade", "--assumeno", *DUP_EXTRA_FLAGS]
         result = subprocess.run(
             dup_cmd,
             check=True,
             capture_output=True,
             text=True,
         )
-        log_info("Zypper dry-run completed successfully")
+        log_info("dnf upgrade --assumeno completed successfully")
         return result.stdout
 
     except subprocess.CalledProcessError as e:
-        """Handle zypper failures more intelligently.
+        """Handle dnf failures more intelligently.
 
-        - Distinguish between a normal zypper lock, PolicyKit errors,
-          and solver/interaction errors (e.g. vendor conflicts).
+        - Distinguish between a normal package-manager lock, PolicyKit errors,
+          and solver/interaction errors.
         """
         # Normalise stderr/stdout to strings
         stderr_text = ""
@@ -3635,10 +3627,12 @@ def get_updates():
         if e.stdout:
             stdout_text = e.stdout.decode() if isinstance(e.stdout, bytes) else str(e.stdout)
 
-        # 1) Zypper is locked by another process – this is expected sometimes.
+        # 1) Package manager is locked by another process – this is expected sometimes.
         if is_zypper_locked(stderr_text):
-            log_info("Zypper is currently locked by another process (likely the downloader or a manual zypper run). Skipping this check.")
-            update_status("SKIPPED: Zypper locked by another process")
+            # The helper function name is historic; it also detects generic
+            # package-manager locks via lock files and process names.
+            log_info("Package manager is currently locked by another process. Skipping this check.")
+            update_status("SKIPPED: Package manager locked by another process")
 
             # Show a gentle desktop notification so the user knows why
             # the background check was skipped. This reminder runs on
@@ -3647,7 +3641,7 @@ def get_updates():
             if LOCK_REMINDER_ENABLED:
                 try:
                     lock_note = Notify.Notification.new(
-                        "Updates paused while zypper is running",
+                        "Updates paused while the package manager is running",
                         "Background checks will retry automatically in about a minute.",
                         "system-software-update",
                     )
@@ -3682,12 +3676,12 @@ def get_updates():
                 log_debug(f"Command stdout: {stdout_text}")
             return None
 
-        # 3) Otherwise, treat as a normal zypper/solver error that needs manual action.
-        log_error("Zypper dry-run failed: manual intervention required")
+        # 3) Otherwise, treat as a normal dnf/solver error that needs manual action.
+        log_error("dnf preview failed: manual intervention required")
         if stderr_text:
-            log_debug(f"Zypper stderr: {stderr_text.strip()}")
+            log_debug(f"dnf stderr: {stderr_text.strip()}")
 
-        # Try to extract the first 'Problem:' line to show a useful hint.
+        # Try to extract a useful hint line from stdout.
         problem_line = ""
         for line in stdout_text.splitlines():
             if line.strip().startswith("Problem:"):
@@ -3697,15 +3691,15 @@ def get_updates():
         if problem_line:
             summary = problem_line
         else:
-            summary = "Zypper dup --dry-run failed. See logs for detailed information."
+            summary = "dnf upgrade --assumeno failed. See logs for detailed information."
 
-        update_status("FAILED: Zypper dry-run requires manual decision")
+        update_status("FAILED: dnf preview requires manual decision")
         err_title = "Updates require manual decision"
         err_message = (
             summary
             + "\n\n"
             + "Open a terminal and run:\n"
-            + "  sudo zypper dup\n"
+            + "  sudo dnf upgrade\n"
             + "to resolve this interactively. After that, the notifier will resume normally."
         )
 
