@@ -135,17 +135,18 @@ load_config() {
 # Boolean flags must be "true" or "false" (case-insensitive).
 
 # ---------------------------------------------------------------------
-# Post-update helpers (run AFTER "pkexec zypper dup")
+# Post-update helpers (run AFTER a manual "sudo dnf upgrade")
 # ---------------------------------------------------------------------
 
 # ENABLE_FLATPAK_UPDATES
-# If true, run "pkexec flatpak update -y" after a successful zypper dup
+# If true, run "pkexec flatpak update -y" after a successful dnf upgrade
 # so Flatpak apps/runtimes are upgraded together with system packages.
 ENABLE_FLATPAK_UPDATES=true
 
 # ENABLE_SNAP_UPDATES
-# If true, run "pkexec snap refresh" after zypper dup so Snap packages
-# are refreshed along with the system. Requires snapd to be installed.
+# If true, run "pkexec snap refresh" after a system upgrade so Snap
+# packages are refreshed along with the system. Requires snapd to be
+# installed.
 ENABLE_SNAP_UPDATES=true
 
 # ENABLE_SOAR_UPDATES
@@ -162,9 +163,10 @@ ENABLE_BREW_UPDATES=true
 
 # ENABLE_PIPX_UPDATES
 # If true and pipx is installed for the user, run "pipx upgrade-all"
-# after zypper dup so that Python command-line tools (yt-dlp, black,
-# ansible, httpie, etc.) are upgraded in their isolated environments.
-# When false, pipx-based tools are left entirely to the user.
+# after a dnf-based system upgrade so that Python command-line tools
+# (yt-dlp, black, ansible, httpie, etc.) are upgraded in their isolated
+# environments. When false, pipx-based tools are left entirely to the
+# user.
 ENABLE_PIPX_UPDATES=true
 
 # ---------------------------------------------------------------------
@@ -227,7 +229,7 @@ MAX_LOG_SIZE_MB=50
 # The notifier caches the result of the dnf preview command to avoid
 # hitting dnf too often.
 # a cached result is considered valid before forcing a fresh check.
-# Higher values = fewer zypper runs but potentially more stale info.
+# Higher values = fewer dnf runs but potentially more stale info.
 CACHE_EXPIRY_MINUTES=10
 
 # SNOOZE_SHORT_HOURS / SNOOZE_MEDIUM_HOURS / SNOOZE_LONG_HOURS
@@ -261,7 +263,7 @@ LOCK_RETRY_INITIAL_DELAY_SECONDS=1
 # reminder on each notifier run while the lock is present.
 #
 # When "false", lock situations are still logged to
-# ~/.local/share/zypper-notify/notifier-detailed.log and reflected in
+# ~/.local/share/dnf-notify/notifier-detailed.log and reflected in
 # last-run-status.txt, but no desktop popup is shown.
 #
 # Valid values: true / false (case-sensitive). Default: true.
@@ -323,7 +325,7 @@ EOF
 # derived from DL_TIMER_INTERVAL_MINUTES, NT_TIMER_INTERVAL_MINUTES, and
 # VERIFY_TIMER_INTERVAL_MINUTES in this file. After changing these values,
 # re-run:
-#   sudo ./zypper-auto.sh install
+#   sudo ./DNF-auto.sh install
 # so the systemd units are regenerated with the new schedule.
     fi
 
@@ -845,18 +847,18 @@ else
 fi
 
 # Check 5: Shell wrapper exists
-log_debug "Checking zypper wrapper script..."
+log_debug "Checking dnf wrapper script..."
 if [ -x "$ZYPPER_WRAPPER_PATH" ]; then
-    log_success "✓ Zypper wrapper script is executable"
+    log_success "✓ DNF wrapper script is executable"
 else
-    log_error "✗ Zypper wrapper script is missing or not executable"
+    log_error "✗ DNF wrapper script is missing or not executable"
     VERIFICATION_FAILED=1
 fi
 
 # Check 6: Fish shell integration (if Fish is installed)
 if [ -d "$SUDO_USER_HOME/.config/fish" ]; then
     log_debug "Checking Fish shell integration..."
-    if [ -f "$SUDO_USER_HOME/.config/fish/conf.d/zypper-wrapper.fish" ]; then
+    if [ -f "$SUDO_USER_HOME/.config/fish/conf.d/dnf-wrapper.fish" ]; then
         log_success "✓ Fish shell wrapper is installed"
     else
         log_error "✗ Fish shell wrapper is missing"
@@ -1012,7 +1014,7 @@ fi
 echo "" | tee -a "${LOG_FILE}"
 
 # Optionally notify the primary user when auto-repair fixed issues.
-# This is primarily intended for the periodic zypper-auto-verify.timer
+# This is primarily intended for the periodic dnf-auto-verify.timer
 # service, but also applies when --verify is run manually.
 if [ "$PROBLEMS_FIXED" -gt 0 ] && [[ "${VERIFY_NOTIFY_USER_ENABLED,,}" == "true" ]]; then
     if command -v notify-send >/dev/null 2>&1; then
@@ -1040,11 +1042,11 @@ fi
 
 # --- Helper: Config reset mode (CLI) ---
 run_reset_config_only() {
-    log_info ">>> Resetting zypper-auto-helper configuration to defaults..."
+    log_info ">>> Resetting dnf-auto-helper configuration to defaults..."
 
     echo "" | tee -a "${LOG_FILE}"
     echo "==============================================" | tee -a "${LOG_FILE}"
-    echo "  zypper-auto-helper Config Reset" | tee -a "${LOG_FILE}"
+    echo "  dnf-auto-helper Config Reset" | tee -a "${LOG_FILE}"
     echo "==============================================" | tee -a "${LOG_FILE}"
     echo "This will replace ${CONFIG_FILE} with a fresh default configuration" | tee -a "${LOG_FILE}"
     echo "while keeping a timestamped backup copy alongside it." | tee -a "${LOG_FILE}"
@@ -1328,7 +1330,7 @@ update_status "SUCCESS: dnf-auto-helper core components uninstalled"
     fi
     echo "" | tee -a "${LOG_FILE}"
     echo "You can reinstall the helper at any time with:" | tee -a "${LOG_FILE}"
-    echo "  sudo sh zypper-auto.sh install" | tee -a "${LOG_FILE}"
+    echo "  sudo sh DNF-auto.sh install" | tee -a "${LOG_FILE}"
 }
 
 # --- Helper: Homebrew-only installation mode (CLI) ---
@@ -1703,9 +1705,9 @@ check_and_install() {
 if [ "${VERIFICATION_ONLY_MODE:-0}" -eq 1 ]; then
     log_info "Skipping installation steps - verification mode"
     # Need to set DOWNLOADER_SCRIPT path for verification
-    DOWNLOADER_SCRIPT="/usr/local/bin/zypper-download-with-progress"
-    ZYPPER_WRAPPER_PATH="$USER_BIN_DIR/zypper-with-ps"
-    USER_LOG_DIR="$SUDO_USER_HOME/.local/share/zypper-notify"
+    DOWNLOADER_SCRIPT="/usr/local/bin/dnf-download-with-progress"
+    ZYPPER_WRAPPER_PATH="$USER_BIN_DIR/dnf-with-ps"
+    USER_LOG_DIR="$SUDO_USER_HOME/.local/share/dnf-notify"
     USER_BUS_PATH="unix:path=/run/user/$(id -u "$SUDO_USER")/bus"
     # Jump to verification section (we'll use a function)
     run_verification_only
@@ -2249,9 +2251,9 @@ log_debug "Creating user log directory: $USER_LOG_DIR"
 mkdir -p "$USER_LOG_DIR"
 chown -R "$SUDO_USER:$SUDO_USER" "$USER_LOG_DIR"
 
-# --- 7b. Create Zypper Wrapper for Manual Updates ---
-log_info ">>> Creating zypper wrapper script for manual updates..."
-update_status "Creating zypper wrapper..."
+# --- 7b. Create DNF Wrapper for Manual Updates ---
+log_info ">>> Creating dnf wrapper script for manual updates..."
+update_status "Creating dnf wrapper..."
 ZYPPER_WRAPPER_PATH="$USER_BIN_DIR/dnf-with-ps"
 log_debug "Writing dnf wrapper to: $ZYPPER_WRAPPER_PATH"
 cat << 'EOF' > "$ZYPPER_WRAPPER_PATH"
@@ -2322,8 +2324,9 @@ STATUS_FILE="$STATUS_DIR/download-status.txt"
 if [[ "$*" == *"dup"* ]] || [[ "$*" == *"dist-upgrade"* ]] || [[ "$*" == *"update"* ]] || [[ "$*" == *"upgrade"* ]]; then
     # For interactive runs, publish a best-effort "downloading" status so the
     # desktop notifier can show a progress bar while the user is running
-    # zypper manually. We don't know the package count in advance here, so we
-    # mark the total as 0 and treat that as "unknown" on the notifier side.
+    # interactive dnf upgrades. We don't know the package count in advance
+    # here, so we mark the total as 0 and treat that as "unknown" on the
+    # notifier side.
     sudo mkdir -p "$STATUS_DIR" >/dev/null 2>&1 || true
     sudo bash -c "echo 'downloading:0:manual:0:0' > '$STATUS_FILE'" >/dev/null 2>&1 || true
 
@@ -2417,9 +2420,9 @@ if [[ "$*" == *"dup"* ]] || [[ "$*" == *"dist-upgrade"* ]] || [[ "$*" == *"updat
     echo "=========================================="
     echo ""
 
-    if command -v soar >/dev/null 2>&1; then
+        if command -v soar >/dev/null 2>&1; then
         # Run the Soar installer/updater in a subshell with set +e to ensure
-        # that any errors cannot kill the interactive zypper session.
+        # that any errors cannot kill the interactive dnf session.
         (
             set +e
 
@@ -2475,8 +2478,8 @@ if [[ "$*" == *"dup"* ]] || [[ "$*" == *"dist-upgrade"* ]] || [[ "$*" == *"updat
     else
         echo "ℹ️  Soar is not installed - skipping Soar update/sync."
         echo "    Install from: https://github.com/pkgforge/soar/releases"
-        if [ -x /usr/local/bin/zypper-auto-helper ]; then
-            echo "    Or via helper: zypper-auto-helper --soar"
+        if [ -x /usr/local/bin/dnf-auto-helper ]; then
+            echo "    Or via helper: dnf-auto-helper --soar"
         fi
     fi
 
@@ -2521,7 +2524,9 @@ if [[ "$*" == *"dup"* ]] || [[ "$*" == *"dist-upgrade"* ]] || [[ "$*" == *"updat
             fi
         else
             echo "ℹ️  Homebrew (brew) is not installed - skipping brew update/upgrade."
-            echo "    To install via helper: sudo zypper-auto-helper --brew"
+            if [ -x /usr/local/bin/dnf-auto-helper ]; then
+                echo "    To install via helper: sudo dnf-auto-helper --brew"
+            fi
         fi
     fi
 
@@ -2545,13 +2550,15 @@ if [[ "$*" == *"dup"* ]] || [[ "$*" == *"dist-upgrade"* ]] || [[ "$*" == *"updat
             fi
         else
             echo "ℹ️  pipx is not installed - skipping Python CLI (pipx) updates."
-            echo "    Recommended: zypper-auto-helper --pip-package (run without sudo)"
+            if [ -x /usr/local/bin/dnf-auto-helper ]; then
+                echo "    Recommended: dnf-auto-helper --pip-package (run without sudo)"
+            fi
         fi
     fi
 
     echo ""
 
-    # Always show service restart info, even if zypper reported errors
+    # Always show service restart info, even if dnf reported errors
     echo "=========================================="
     echo "  Post-Update Service Check"
     echo "=========================================="
@@ -2688,7 +2695,7 @@ fi
 # Fish configuration for dnf-auto-helper
 if [ -d "$SUDO_USER_HOME/.config/fish" ]; then
     log_debug "Adding dnf-auto-helper alias to fish config"
-    FISH_HELPER_FILE="$SUDO_USER_HOME/.config/fish/conf.d/zypper-auto-helper-alias.fish"
+    FISH_HELPER_FILE="$SUDO_USER_HOME/.config/fish/conf.d/dnf-auto-helper-alias.fish"
     cat > "$FISH_HELPER_FILE" << 'FISHHELPER'
 # dnf-auto-helper command alias (added by dnf-auto-helper)
 alias dnf-auto-helper='sudo /usr/local/bin/dnf-auto-helper'
@@ -2719,7 +2726,7 @@ update_status "Creating user notifier service..."
 log_debug "Writing user service file: ${NT_SERVICE_FILE}"
 cat << EOF > ${NT_SERVICE_FILE}
 [Unit]
-Description=Notify user of pending Tumbleweed updates
+Description=Notify user of pending system updates
 Wants=network-online.target
 After=network-online.target nss-lookup.target
 
@@ -2763,7 +2770,7 @@ log_debug "Writing Python script to: ${NOTIFY_SCRIPT_PATH}"
 cat << 'EOF' > ${NOTIFY_SCRIPT_PATH}
 #!/usr/bin/env python3
 #
-# zypper-notify-updater.py (v53 with snooze controls and safety preflight)
+# dnf-notify-updater.py (v53 with snooze controls and safety preflight)
 #
 # This script is run as the USER. It uses PyGObject (gi)
 # to create a robust, clickable notification.
@@ -2862,10 +2869,10 @@ def update_status(status: str) -> None:
     except Exception as e:
         log_error(f"Failed to update status file: {e}")
 
-# --- Helper: read extra dup flags from /etc/zypper-auto.conf ---
+# --- Helper: read extra dup flags from CONFIG_FILE (/etc/dnf-auto.conf by default) ---
 
 def _read_dup_extra_flags() -> list[str]:
-    """Read DUP_EXTRA_FLAGS from /etc/zypper-auto.conf, if set.
+    """Read DUP_EXTRA_FLAGS from CONFIG_FILE (usually /etc/dnf-auto.conf), if set.
 
     The value is split using shell-like rules so users can write e.g.:
         DUP_EXTRA_FLAGS="--allow-vendor-change --from my-repo"
@@ -2901,7 +2908,7 @@ def _read_dup_extra_flags() -> list[str]:
 
 
 def _read_bool_from_config(name: str, default: bool) -> bool:
-    """Best-effort boolean reader for /etc/zypper-auto.conf.
+    """Best-effort boolean reader for CONFIG_FILE (usually /etc/dnf-auto.conf).
 
     Accepts typical shell-style booleans such as true/false, yes/no,
     on/off, 1/0 (case-insensitive after stripping quotes and spaces).
@@ -3067,12 +3074,39 @@ def check_disk_space() -> tuple[bool, str]:
         return True, "Could not check disk space"
 
 def check_snapshots() -> tuple[bool, str]:
-    """Check if snapper is installed and whether configs/snapshots exist.
+    """Check for filesystem snapshots on openSUSE/SLE systems.
+
+    On Fedora and other non-openSUSE distributions this is a no-op and
+    returns (False, "") so that snapshot state is hidden from user-facing
+    notifications.
 
     Returns: (has_snapshots, message)
     - has_snapshots=True  => at least one snapshot exists
     - has_snapshots=False => snapper not installed, not configured, or zero snapshots
     """
+    # Only run detailed snapper checks on openSUSE/SLE systems; on other
+    # distributions we skip snapshot reporting entirely.
+    distro_id = ""
+    try:
+        with open("/etc/os-release", "r", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("ID="):
+                    distro_id = line.strip().split("=", 1)[1].strip().strip('"').lower()
+                    break
+    except OSError as e:
+        log_debug(f"Could not read /etc/os-release for snapshot detection: {e}")
+
+    if distro_id and distro_id not in (
+        "opensuse-tumbleweed",
+        "opensuse-leap",
+        "opensuse",
+        "sles",
+        "sled",
+        "suse",
+    ):
+        log_debug("Non-openSUSE distro detected; skipping snapper snapshot checks")
+        return False, ""
+
     # First, see if snapper is installed and if there is a root config
     try:
         cfg_result = subprocess.run(
@@ -3267,6 +3301,10 @@ def is_package_manager_locked(stderr_text: str | None = None) -> bool:
         log_debug(f"Lock detection failed: {e}")
 
     return False
+
+
+# Backwards-compat alias for older code paths (historic function name)
+is_zypper_locked = is_package_manager_locked
 
 
 # Rotate log at startup if needed
@@ -3704,7 +3742,7 @@ def get_updates():
             stdout_text = e.stdout.decode() if isinstance(e.stdout, bytes) else str(e.stdout)
 
         # 1) Package manager is locked by another process – this is expected sometimes.
-        if is_zypper_locked(stderr_text):
+        if is_package_manager_locked(stderr_text):
             # The helper function name is historic; it also detects generic
             # package-manager locks via lock files and process names.
             log_info("Package manager is currently locked by another process. Skipping this check.")
@@ -3713,7 +3751,7 @@ def get_updates():
             # Show a gentle desktop notification so the user knows why
             # the background check was skipped. This reminder runs on
             # every notifier cycle while the lock is present, unless
-            # LOCK_REMINDER_ENABLED=false in /etc/zypper-auto.conf.
+            # LOCK_REMINDER_ENABLED=false in /etc/dnf-auto.conf.
             if LOCK_REMINDER_ENABLED:
                 try:
                     lock_note = Notify.Notification.new(
@@ -3724,7 +3762,7 @@ def get_updates():
                     lock_note.set_timeout(5000)
                     lock_note.set_hint(
                         "x-canonical-private-synchronous",
-                        GLib.Variant("s", "zypper-locked"),
+                        GLib.Variant("s", "dnf-locked"),
                     )
                     lock_note.show()
                 except Exception as ne:
@@ -3781,10 +3819,10 @@ def get_updates():
 
         n = Notify.Notification.new(err_title, err_message, "dialog-warning")
         n.set_timeout(30000)  # 30 seconds
-        n.set_hint("x-canonical-private-synchronous", GLib.Variant("s", "zypper-error"))
+        n.set_hint("x-canonical-private-synchronous", GLib.Variant("s", "dnf-error"))
 
         # Add an action button to launch the interactive helper in a terminal
-        action_script = os.path.expanduser("~/.local/bin/zypper-run-install")
+        action_script = os.path.expanduser("~/.local/bin/dnf-run-install")
         n.add_action("install", "Open Helper", on_action, action_script)
 
         log_info("Manual-intervention notification displayed (with Open Helper action)")
@@ -3936,7 +3974,7 @@ def on_action(notification, action_id, user_data):
     elif action_id == "view-changes":
         log_info("User clicked View Changes button")
         update_status("User viewing update details")
-        view_script = os.path.expanduser("~/.local/bin/zypper-view-changes")
+        view_script = os.path.expanduser("~/.local/bin/dnf-view-changes")
         try:
             # Make sure the script is executable
             import stat
@@ -4006,7 +4044,7 @@ def main():
                             )
                             n.set_timeout(5000)  # 5 seconds
                             # Set hint to replace previous download status notifications
-                            n.set_hint("x-canonical-private-synchronous", GLib.Variant("s", "zypper-download-status"))
+                            n.set_hint("x-canonical-private-synchronous", GLib.Variant("s", "dnf-download-status"))
                             n.show()
                             time.sleep(0.1)
                             return  # Exit, will check again in 5 seconds
@@ -4230,7 +4268,7 @@ def main():
                             pending_count = None
                         
                         if pending_count == 0:
-                            log_info("Download status was 'complete' but zypper reports no pending updates; treating completion as stale and skipping 'Downloads Complete' notification.")
+                            log_info("Download status was 'complete' but dnf reports no pending updates; treating completion as stale and skipping 'Downloads Complete' notification.")
                             try:
                                 with open(download_status_file, "w") as f:
                                     f.write("idle")
@@ -4300,8 +4338,8 @@ with open("/var/log/dnf-auto/download-status.txt", "w") as f:
                     # user instead of silently failing.
                     log_error("Background downloader reported a network error while checking for updates")
                     msg = (
-                        "The background updater could not reach the openSUSE repositories.\n\n"
-                        "This is usually a temporary network or DNS problem.\n\n"
+                        "The background updater could not reach the configured repositories.\n\n"\
+                        "This is usually a temporary network or DNS problem.\n\n"\
                         "Check your connection and DNS settings, then try again."
                     )
                     n = Notify.Notification.new(
@@ -4390,7 +4428,7 @@ with open("/var/log/dnf-auto/download-status.txt", "w") as f:
                         )
                         dry_output = result.stdout or ""
                     except Exception as e2:
-                        log_debug(f"Failed to run zypper dry-run for solver summary: {e2}")
+                        log_debug(f"Failed to run dnf preview for solver summary: {e2}")
                         dry_output = ""
 
                     title = "Updates require your decision"
@@ -4466,7 +4504,7 @@ n.set_hint("x-canonical-private-synchronous", GLib.Variant("s", "dnf-updates-con
                     except KeyboardInterrupt:
                         log_info("Solver-conflict notification main loop interrupted")
 
-                    # Do not run another zypper dry-run in this cycle; wait for user action.
+                    # Do not run another dnf preview in this cycle; wait for user action.
                     return
                     
             except Exception as e:
@@ -4494,12 +4532,12 @@ n.set_hint("x-canonical-private-synchronous", GLib.Variant("s", "dnf-updates-con
             )
             n = Notify.Notification.new(err_title, err_message, "dialog-error")
             n.set_timeout(30000)  # 30 seconds
-            n.set_hint("x-canonical-private-synchronous", GLib.Variant("s", "zypper-error"))
+            n.set_hint("x-canonical-private-synchronous", GLib.Variant("s", "dnf-error"))
             n.show()
             log_info("Error notification displayed")
             return
 
-        # Empty string means environment was unsafe and zypper was skipped.
+        # Empty string means environment was unsafe and dnf was skipped.
         if not output or not output.strip():
             log_info("No dnf run performed (environment not safe). Exiting.")
             return
@@ -4542,7 +4580,9 @@ n.set_hint("x-canonical-private-synchronous", GLib.Variant("s", "dnf-updates-con
         warnings = []
         if not has_space:
             warnings.append(f"⚠️ {space_msg}")
-        # Always show Snapper state; use ℹ️ when snapshots exist, ⚠️ when they don't
+        # Always show snapshot state when available; use ℹ️ when snapshots exist,
+        # ⚠️ when they don't. On non-openSUSE systems check_snapshots() returns
+        # an empty message so nothing is shown here.
         if snapshot_msg:
             icon = "ℹ️" if has_snapshots else "⚠️"
             warnings.append(f"{icon} {snapshot_msg}")
@@ -4985,8 +5025,8 @@ RUN_UPDATE() {
         else
             echo "⚠️  curl is not installed; cannot automatically install Soar."
             echo "    Please install curl or install Soar manually from: https://github.com/pkgforge/soar/releases"
-            if [ -x /usr/local/bin/zypper-auto-helper ]; then
-                echo "    Or via helper: zypper-auto-helper --soar"
+            if [ -x /usr/local/bin/dnf-auto-helper ]; then
+                echo "    Or via helper: dnf-auto-helper --soar"
             fi
         fi
     fi
