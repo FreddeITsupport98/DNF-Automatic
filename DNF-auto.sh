@@ -1,5 +1,12 @@
-#!/bin/bash
+#!/bin/sh
 #
+# Auto-reexec under bash if not already running under bash, so that the rest
+# of this script can rely on bash-specific features (arrays, [[, etc.), even
+# when invoked as "sh DNF-auto.sh".
+if [ -z "${BASH_VERSION:-}" ]; then
+    exec /usr/bin/env bash "$0" "$@"
+fi
+
 #       VERSION 59 - Fedora/DNF polish, scripted uninstaller, external config, and hardening
 # This script installs the DNF auto-helper with a safe uninstaller,
 # an external configuration file, and improved systemd hardening.
@@ -1003,7 +1010,7 @@ else
     log_error ">>> $VERIFICATION_FAILED verification check(s) failed!"
     log_error "  → Auto-repair attempted but could not fix all issues"
     log_info "  → Review logs: ${LOG_FILE}"
-    if [ "${#CONFIG_WARNINGS[@]:-0}" -gt 0 ]; then
+    if [ "${#CONFIG_WARNINGS[@]}" -gt 0 ] 2>/dev/null; then
         log_info "  → Config warnings detected; consider: sudo dnf-auto-helper --reset-config"
     fi
     log_info "  → Common fixes:"
@@ -1709,9 +1716,18 @@ if [ "${VERIFICATION_ONLY_MODE:-0}" -eq 1 ]; then
     DNF_WRAPPER_PATH="$USER_BIN_DIR/dnf-with-ps"
     USER_LOG_DIR="$SUDO_USER_HOME/.local/share/dnf-notify"
     USER_BUS_PATH="unix:path=/run/user/$(id -u "$SUDO_USER")/bus"
-    # Jump to verification section (we'll use a function)
+
+    # In verification-only mode we *expect* a non-zero exit code when
+    # problems are found, so disable the installer-wide ERR trap and
+    # temporarily turn off 'set -e' so that run_verification_only can
+    # complete and return its status cleanly instead of being treated as
+    # a fatal installer error.
+    trap - ERR
+    set +e
     run_verification_only
-    exit $?
+    rc=$?
+    set -e
+    exit $rc
 fi
 
 # --- 2b. Dependency Checks ---
@@ -3662,6 +3678,13 @@ def get_updates():
         - None if dnf/PolicyKit fails
     """
     log_info("Starting update check...")
+
+    # Run dnf in a stable C locale so that output is always English, which our
+    # regex/parser expects. This avoids issues on systems where DNF is
+    # localised (Spanish, German, etc.).
+    base_env = os.environ.copy()
+    base_env["LC_ALL"] = "C"
+
     try:
         safe = is_safe()
 
@@ -3673,24 +3696,41 @@ def get_updates():
 
         log_info("Safe to refresh. Running full check...")
         update_status("Running dnf makecache (refreshing metadata)...")
-        log_debug("Executing: pkexec dnf -q makecache")
+        log_debug("Executing: pkexec /usr/bin/sh -c 'LC_ALL=C /usr/bin/dnf -q makecache'")
 
+        env = base_env.copy()
         subprocess.run(
-            ["pkexec", "/usr/bin/dnf", "-q", "makecache"],
+            ["pkexec", "/usr/bin/sh", "-c", "LC_ALL=C /usr/bin/dnf -q makecache"],
             check=True,
             capture_output=True,
+            env=env,
         )
         log_info("dnf makecache completed successfully")
 
         update_status("Running dnf upgrade --assumeno (preview)...")
-        log_debug("Executing: pkexec dnf -q upgrade --assumeno")
+        log_debug("Executing: pkexec /usr/bin/sh -c 'LC_ALL=C /usr/bin/dnf -q upgrade --assumeno'")
 
-        dup_cmd = ["pkexec", "/usr/bin/dnf", "-q", "upgrade", "--assumeno", *DUP_EXTRA_FLAGS]
+        # Build a shell-safe representation of extra flags so they are
+        # honoured even when running under sh -c.
+        shell_flags = ""  # type: str
+        try:
+            import shlex as _shlex_for_flags
+            if DUP_EXTRA_FLAGS:
+                shell_flags = " " + " ".join(_shlex_for_flags.quote(str(f)) for f in DUP_EXTRA_FLAGS)
+        except Exception:
+            # Fall back to a simple join if shlex is not available for some reason.
+            if DUP_EXTRA_FLAGS:
+                shell_flags = " " + " ".join(str(f) for f in DUP_EXTRA_FLAGS)
+
+        cmd_str = "LC_ALL=C /usr/bin/dnf -q upgrade --assumeno" + shell_flags
+        dup_cmd = ["pkexec", "/usr/bin/sh", "-c", cmd_str]
+        env = base_env.copy()
         result = subprocess.run(
             dup_cmd,
             check=True,
             capture_output=True,
             text=True,
+            env=env,
         )
         log_info("dnf upgrade --assumeno completed successfully")
         return result.stdout
@@ -3867,8 +3907,8 @@ def parse_output(output: str, include_preview: bool = True):
         log_info("No updates found in dnf output")
         return None, None, None, 0
 
-    # Count Packages
-    count_match = re.search(r"(\d+) packages to upgrade", output)
+    # Count Packages from DNF summary line, e.g. "Upgrade  5 Packages"
+    count_match = re.search(r"Upgrade\s+(\d+)\s+Packages?", output, re.IGNORECASE)
     package_count = int(count_match.group(1)) if count_match else 0
     
     # If no packages found or count is 0, return None
@@ -4212,19 +4252,30 @@ def main():
                         pending_count = None
                         try:
                             log_debug("Verifying pending updates for downloads-complete status...")
+                            # Reuse the same LC_ALL=C shell wrapping as in get_updates()
+                            shell_flags = ""
+                            try:
+                                import shlex as _shlex_for_flags2
+                                if DUP_EXTRA_FLAGS:
+                                    shell_flags = " " + " ".join(_shlex_for_flags2.quote(str(f)) for f in DUP_EXTRA_FLAGS)
+                            except Exception:
+                                if DUP_EXTRA_FLAGS:
+                                    shell_flags = " " + " ".join(str(f) for f in DUP_EXTRA_FLAGS)
+
+                            cmd_str = "LC_ALL=C /usr/bin/dnf -q upgrade --assumeno" + shell_flags
                             preview_cmd = [
                                 "pkexec",
-                                "/usr/bin/dnf",
-                                "-q",
-                                "upgrade",
-                                "--assumeno",
-                                *DUP_EXTRA_FLAGS,
+                                "/usr/bin/sh",
+                                "-c",
+                                cmd_str,
                             ]
+                            env = base_env.copy()
                             result = subprocess.run(
                                 preview_cmd,
                                 capture_output=True,
                                 text=True,
                                 timeout=30,
+                                env=env,
                             )
                             if result.returncode == 0:
                                 dry_output = result.stdout or ""
@@ -4282,12 +4333,12 @@ def main():
                                 )
                                 n.set_timeout(0)  # 0 = persist until user interaction
                                 n.set_urgency(Notify.Urgency.NORMAL)  # Normal urgency
-n.set_hint("x-canonical-private-synchronous", GLib.Variant("s", "dnf-download-complete"))
+                                n.set_hint("x-canonical-private-synchronous", GLib.Variant("s", "dnf-download-complete"))
                                 n.show()
                                 time.sleep(0.1)  # Wait a bit before continuing
                                 # Clear the complete status so it doesn't show again
                                 try:
-with open("/var/log/dnf-auto/download-status.txt", "w") as f:
+                                    with open("/var/log/dnf-auto/download-status.txt", "w") as f:
                                         f.write("idle")
                                 except Exception:
                                     pass
@@ -4380,19 +4431,29 @@ with open("/var/log/dnf-auto/download-status.txt", "w") as f:
                     dry_output = ""
                     try:
                         log_debug("Running dnf upgrade --assumeno to summarise solver-conflict state...")
+                        shell_flags = ""
+                        try:
+                            import shlex as _shlex_for_flags3
+                            if DUP_EXTRA_FLAGS:
+                                shell_flags = " " + " ".join(_shlex_for_flags3.quote(str(f)) for f in DUP_EXTRA_FLAGS)
+                        except Exception:
+                            if DUP_EXTRA_FLAGS:
+                                shell_flags = " " + " ".join(str(f) for f in DUP_EXTRA_FLAGS)
+
+                        cmd_str = "LC_ALL=C /usr/bin/dnf -q upgrade --assumeno" + shell_flags
                         conflict_cmd = [
                             "pkexec",
-                            "/usr/bin/dnf",
-                            "-q",
-                            "upgrade",
-                            "--assumeno",
-                            *DUP_EXTRA_FLAGS,
+                            "/usr/bin/sh",
+                            "-c",
+                            cmd_str,
                         ]
+                        env = base_env.copy()
                         result = subprocess.run(
                             conflict_cmd,
                             capture_output=True,
                             text=True,
                             timeout=60,
+                            env=env,
                         )
                         dry_output = result.stdout or ""
                     except Exception as e2:
@@ -4437,7 +4498,7 @@ with open("/var/log/dnf-auto/download-status.txt", "w") as f:
                         "or click 'Install Now' to open the helper, then follow dnf's prompts to resolve the conflicts."
                     )
 
-action_script = os.path.expanduser("~/.local/bin/dnf-run-install")
+                    action_script = os.path.expanduser("~/.local/bin/dnf-run-install")
 
                     n = Notify.Notification.new(
                         title,
@@ -4447,7 +4508,7 @@ action_script = os.path.expanduser("~/.local/bin/dnf-run-install")
                     # Persistent notification, high urgency.
                     n.set_timeout(0)
                     n.set_urgency(Notify.Urgency.CRITICAL)
-n.set_hint("x-canonical-private-synchronous", GLib.Variant("s", "dnf-updates-conflict"))
+                    n.set_hint("x-canonical-private-synchronous", GLib.Variant("s", "dnf-updates-conflict"))
 
                     # Add the same actions as the normal "updates ready" notification.
                     n.add_action("install", "Install Now", on_action, action_script)
@@ -5528,22 +5589,45 @@ if [ -d /etc/polkit-1/rules.d ]; then
 // Allow members of the wheel group to run safe, non-interactive dnf
 // preview commands used by dnf-auto-helper without an authentication
 // prompt. This covers:
-//   pkexec dnf -q makecache
-//   pkexec dnf -q upgrade --assumeno
+//   pkexec /usr/bin/sh -c 'LC_ALL=C /usr/bin/dnf -q makecache'
+//   pkexec /usr/bin/sh -c 'LC_ALL=C /usr/bin/dnf -q upgrade --assumeno'
 polkit.addRule(function(action, subject) {
     if (action.id == "org.freedesktop.policykit.exec" &&
-        action.lookup("command") == "/usr/bin/dnf" &&
         subject.isInGroup("wheel")) {
+        var cmd = action.lookup("command");
         var argv = action.lookup("argv");
-        if (!argv) {
+        if (!argv || !cmd) {
             return polkit.Result.NOT_HANDLED;
         }
-        // Expect argv like: ["/usr/bin/dnf", "-q", "makecache", ...]
-        if (argv.length >= 3 && argv[1] == "-q") {
-            if (argv[2] == "makecache") {
+
+        // Legacy direct dnf path: pkexec /usr/bin/dnf -q ...
+        if (cmd == "/usr/bin/dnf") {
+            // Expect argv like: ["/usr/bin/dnf", "-q", "makecache", ...]
+            if (argv.length >= 3 && argv[1] == "-q") {
+                if (argv[2] == "makecache") {
+                    return polkit.Result.YES;
+                }
+                if (argv[2] == "upgrade" && argv.indexOf("--assumeno") >= 0) {
+                    return polkit.Result.YES;
+                }
+            }
+        }
+
+        // New shell-wrapped form used by dnf-auto-helper:
+        //   pkexec /usr/bin/sh -c "LC_ALL=C /usr/bin/dnf -q ..."
+        if (cmd == "/usr/bin/sh" && argv.length >= 3 && argv[1] == "-c") {
+            var script = argv[2];
+            if (!script) {
+                return polkit.Result.NOT_HANDLED;
+            }
+
+            // Normalise by trimming leading/trailing whitespace
+            script = script.trim();
+
+            if (script.indexOf("LC_ALL=C /usr/bin/dnf -q makecache") === 0) {
                 return polkit.Result.YES;
             }
-            if (argv[2] == "upgrade" && argv.indexOf("--assumeno") >= 0) {
+            if (script.indexOf("LC_ALL=C /usr/bin/dnf -q upgrade --assumeno") === 0) {
                 return polkit.Result.YES;
             }
         }
