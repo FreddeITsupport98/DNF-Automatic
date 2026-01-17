@@ -1945,6 +1945,34 @@ handle_lock_or_fail() {
     # Common dnf/PackageKit lock messages (Fedora variants)
     if grep -qiE 'System management is locked|System management is currently locked by another update tool|Another app is currently holding the dnf lock|dnf is locked by another process|Existing lock' "$err_file" 2>/dev/null; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Package manager is locked by another process; skipping this downloader run (will retry on next timer)" >&2
+
+        # Log detailed lock-owner information for easier diagnostics.
+        local lock_pid_file lock_pid lock_comm lock_cmd rpm_lock_info
+        if [ -f "/run/dnf.pid" ] || [ -f "/var/run/dnf.pid" ]; then
+            lock_pid_file="/run/dnf.pid"
+            [ -f "/var/run/dnf.pid" ] && lock_pid_file="/var/run/dnf.pid"
+            lock_pid=$(cat "$lock_pid_file" 2>/dev/null || echo "")
+            if [ -n "$lock_pid" ] && kill -0 "$lock_pid" 2>/dev/null; then
+                lock_comm=$(ps -p "$lock_pid" -o comm= 2>/dev/null || echo "")
+                lock_cmd=$(ps -p "$lock_pid" -o args= 2>/dev/null || echo "")
+                echo "[LOCK] dnf.pid owner: PID=$lock_pid, COMM=$lock_comm" >&2
+                echo "[LOCK] Command line: $lock_cmd" >&2
+            else
+                echo "[LOCK] dnf.pid exists at $lock_pid_file with stale or unknown PID '$lock_pid'" >&2
+            fi
+        else
+            echo "[LOCK] No dnf.pid file present" >&2
+        fi
+
+        if [ -f "/var/lib/rpm/.rpm.lock" ] && command -v fuser >/dev/null 2>&1; then
+            rpm_lock_info=$(fuser "/var/lib/rpm/.rpm.lock" 2>&1 || echo "")
+            if [ -n "$rpm_lock_info" ]; then
+                echo "[LOCK] RPM DB lock owners (fuser /var/lib/rpm/.rpm.lock): $rpm_lock_info" >&2
+            else
+                echo "[LOCK] RPM DB lock present but no active owner reported by fuser" >&2
+            fi
+        fi
+
         echo "idle" > "$STATUS_FILE"
         rm -f "$err_file"
         exit 0
@@ -2415,32 +2443,44 @@ if [[ "$*" == *"dup"* ]] || [[ "$*" == *"dist-upgrade"* ]] || [[ "$*" == *"updat
     sudo mkdir -p "$STATUS_DIR" >/dev/null 2>&1 || true
     sudo bash -c "echo 'downloading:0:manual:0:0' > '$STATUS_FILE'" >/dev/null 2>&1 || true
 
-    # Before running dnf, respect the global system management lock and
-    # retry a few times with increasing delays so the user can see that we
-    # are waiting instead of failing immediately.
-    max_attempts=${LOCK_RETRY_MAX_ATTEMPTS:-10}
-    base_delay=${LOCK_RETRY_INITIAL_DELAY_SECONDS:-1}
-    attempt=1
-    while has_pkg_lock && [ "$attempt" -le "$max_attempts" ]; do
-        delay=$((base_delay * attempt))
-        echo ""
-        echo "System management is currently locked by another update tool (dnf/PackageKit)."
-        echo "Retry $attempt/$max_attempts: waiting $delay second(s) for the other updater to finish..."
-        sleep "$delay"
-        attempt=$((attempt + 1))
-    done
-
-    # After retries, if a lock is still present, show a clear message and exit
-    # cleanly instead of letting dnf print the raw lock error.
+    # Optionally warn if another package tool currently holds the lock, but
+    # always let dnf handle locking itself so behaviour matches a direct
+    # 'sudo dnf' call. This avoids the wrapper "locking out" user-initiated
+    # updates when a short-lived background task briefly holds the lock.
     if has_pkg_lock; then
         echo ""
-        echo "System management is still locked by another update tool."
-        echo "Close that other update tool (or wait for it to finish), then run this update command again."
+        echo "Warning: system management appears to be locked by another update tool (dnf/PackageKit)."
+        echo "Lock diagnostics:"
+
+        # Show dnf.pid owner if present
+        if [ -f "/run/dnf.pid" ] || [ -f "/var/run/dnf.pid" ]; then
+            lock_pid_file="/run/dnf.pid"
+            [ -f "/var/run/dnf.pid" ] && lock_pid_file="/var/run/dnf.pid"
+            lock_pid=$(cat "$lock_pid_file" 2>/dev/null || echo "")
+            if [ -n "$lock_pid" ] && kill -0 "$lock_pid" 2>/dev/null; then
+                lock_comm=$(ps -p "$lock_pid" -o comm= 2>/dev/null || echo "")
+                lock_cmd=$(ps -p "$lock_pid" -o args= 2>/dev/null || echo "")
+                echo "  dnf.pid owner: PID=$lock_pid, COMMAND=$lock_comm"
+                echo "  Full command: $lock_cmd"
+            else
+                echo "  dnf.pid exists at $lock_pid_file, but PID '$lock_pid' is not running (stale lock?)"
+            fi
+        else
+            echo "  No dnf.pid lock file present."
+        fi
+
+        # Show RPM DB lock owners if available
+        if [ -f "/var/lib/rpm/.rpm.lock" ] && command -v fuser >/dev/null 2>&1; then
+            rpm_lock_info=$(fuser "/var/lib/rpm/.rpm.lock" 2>&1 || echo "")
+            if [ -n "$rpm_lock_info" ]; then
+                echo "  RPM DB lock owners (fuser /var/lib/rpm/.rpm.lock): $rpm_lock_info"
+            else
+                echo "  RPM DB lock present but fuser reports no active owner."
+            fi
+        fi
+
+        echo "Running dnf anyway; if the lock is still active, dnf will print its own error."
         echo ""
-        # Clear the manual downloading state so the notifier does not show a
-        # stuck progress bar when we never actually ran dnf.
-        sudo bash -c "echo 'idle' > '$STATUS_FILE'" >/dev/null 2>&1 || true
-        exit 1
     fi
 
     # Run the actual dnf command (map common zypper update invocations to dnf upgrade)
