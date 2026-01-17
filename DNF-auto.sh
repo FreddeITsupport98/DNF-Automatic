@@ -2262,11 +2262,6 @@ cat << 'EOF' > "$DNF_WRAPPER_PATH"
 
 # Load feature toggles from the same config used by the installer.
 CONFIG_FILE="/etc/dnf-auto.conf"
-# Backwards-compat: if an older /etc/zypper-auto.conf exists but
-# /etc/dnf-auto.conf does not, prefer the legacy file once.
-if [ ! -r "$CONFIG_FILE" ] && [ -r "/etc/zypper-auto.conf" ]; then
-    CONFIG_FILE="/etc/zypper-auto.conf"
-fi
 
 # Default feature toggles (can be overridden by CONFIG_FILE)
 ENABLE_FLATPAK_UPDATES="true"
@@ -3074,39 +3069,16 @@ def check_disk_space() -> tuple[bool, str]:
         return True, "Could not check disk space"
 
 def check_snapshots() -> tuple[bool, str]:
-    """Check for filesystem snapshots on openSUSE/SLE systems.
+    """Check for filesystem snapshots using snapper, if available.
 
-    On Fedora and other non-openSUSE distributions this is a no-op and
-    returns (False, "") so that snapshot state is hidden from user-facing
-    notifications.
+    This is intentionally distro-agnostic: on any system where the
+    `snapper` tool is installed and configured, we report whether
+    snapshots exist and return a short human-readable message.
 
     Returns: (has_snapshots, message)
     - has_snapshots=True  => at least one snapshot exists
     - has_snapshots=False => snapper not installed, not configured, or zero snapshots
     """
-    # Only run detailed snapper checks on openSUSE/SLE systems; on other
-    # distributions we skip snapshot reporting entirely.
-    distro_id = ""
-    try:
-        with open("/etc/os-release", "r", encoding="utf-8") as f:
-            for line in f:
-                if line.startswith("ID="):
-                    distro_id = line.strip().split("=", 1)[1].strip().strip('"').lower()
-                    break
-    except OSError as e:
-        log_debug(f"Could not read /etc/os-release for snapshot detection: {e}")
-
-    if distro_id and distro_id not in (
-        "opensuse-tumbleweed",
-        "opensuse-leap",
-        "opensuse",
-        "sles",
-        "sled",
-        "suse",
-    ):
-        log_debug("Non-openSUSE distro detected; skipping snapper snapshot checks")
-        return False, ""
-
     # First, see if snapper is installed and if there is a root config
     try:
         cfg_result = subprocess.run(
@@ -3301,10 +3273,6 @@ def is_package_manager_locked(stderr_text: str | None = None) -> bool:
         log_debug(f"Lock detection failed: {e}")
 
     return False
-
-
-# Backwards-compat alias for older code paths (historic function name)
-is_zypper_locked = is_package_manager_locked
 
 
 # Rotate log at startup if needed
@@ -4808,7 +4776,7 @@ RUN_UPDATE() {
     # an open graphical updater or another terminal dnf), retry a few times with
     # increasing delays (1, 2, 3, ... seconds) before giving up and telling
     # the user what to do. The number of attempts and base delay are
-    # controlled from /etc/zypper-auto.conf.
+    # controlled from /etc/dnf-auto.conf.
     max_attempts=${LOCK_RETRY_MAX_ATTEMPTS:-10}
     base_delay=${LOCK_RETRY_INITIAL_DELAY_SECONDS:-1}
     attempt=1
