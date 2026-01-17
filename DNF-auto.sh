@@ -503,10 +503,10 @@ EOF
         for key in "${missing_keys[@]}"; do
             case "$key" in
                 DUP_EXTRA_FLAGS)
-                    log_info "  - DUP_EXTRA_FLAGS: controls extra flags added to every 'zypper dup' run (background downloader and notifier), e.g. --allow-vendor-change."
+                    log_info "  - DUP_EXTRA_FLAGS: controls extra flags added to every 'dnf upgrade' run (background downloader and notifier), e.g. --allow-vendor-change."
                     ;;
                 LOCK_RETRY_MAX_ATTEMPTS)
-                    log_info "  - LOCK_RETRY_MAX_ATTEMPTS: how many times the Ready-to-Install helper retries when zypper is locked before giving up."
+                    log_info "  - LOCK_RETRY_MAX_ATTEMPTS: how many times the Ready-to-Install helper retries when the package manager is locked before giving up."
                     ;;
                 LOCK_RETRY_INITIAL_DELAY_SECONDS)
                     log_info "  - LOCK_RETRY_INITIAL_DELAY_SECONDS: base delay (in seconds) between lock retries for the Ready-to-Install helper."
@@ -848,7 +848,7 @@ fi
 
 # Check 5: Shell wrapper exists
 log_debug "Checking dnf wrapper script..."
-if [ -x "$ZYPPER_WRAPPER_PATH" ]; then
+if [ -x "$DNF_WRAPPER_PATH" ]; then
     log_success "✓ DNF wrapper script is executable"
 else
     log_error "✗ DNF wrapper script is missing or not executable"
@@ -1267,9 +1267,9 @@ update_status "Uninstalling dnf-auto-helper components..."
         sed -i '/alias zypper=/d' "$SUDO_USER_HOME/.zshrc" 2>>"${LOG_FILE}" || true
         # Also remove newer DNF wrapper aliases if present
         sed -i '/# DNF wrapper for auto service check/d' "$SUDO_USER_HOME/.bashrc" 2>>"${LOG_FILE}" || true
-        sed -i "/alias dnf='$ZYPPER_WRAPPER_PATH'/d" "$SUDO_USER_HOME/.bashrc" 2>>"${LOG_FILE}" || true
+        sed -i "/alias dnf='$DNF_WRAPPER_PATH'/d" "$SUDO_USER_HOME/.bashrc" 2>>"${LOG_FILE}" || true
         sed -i '/# DNF wrapper for auto service check/d' "$SUDO_USER_HOME/.zshrc" 2>>"${LOG_FILE}" || true
-        sed -i "/alias dnf='$ZYPPER_WRAPPER_PATH'/d" "$SUDO_USER_HOME/.zshrc" 2>>"${LOG_FILE}" || true
+        sed -i "/alias dnf='$DNF_WRAPPER_PATH'/d" "$SUDO_USER_HOME/.zshrc" 2>>"${LOG_FILE}" || true
         # Remove command aliases for the helper CLI
         sed -i '/# dnf-auto-helper command alias/d' "$SUDO_USER_HOME/.bashrc" 2>>"${LOG_FILE}" || true
         sed -i '/alias dnf-auto-helper=/d' "$SUDO_USER_HOME/.bashrc" 2>>"${LOG_FILE}" || true
@@ -1706,7 +1706,7 @@ if [ "${VERIFICATION_ONLY_MODE:-0}" -eq 1 ]; then
     log_info "Skipping installation steps - verification mode"
     # Need to set DOWNLOADER_SCRIPT path for verification
     DOWNLOADER_SCRIPT="/usr/local/bin/dnf-download-with-progress"
-    ZYPPER_WRAPPER_PATH="$USER_BIN_DIR/dnf-with-ps"
+    DNF_WRAPPER_PATH="$USER_BIN_DIR/dnf-with-ps"
     USER_LOG_DIR="$SUDO_USER_HOME/.local/share/dnf-notify"
     USER_BUS_PATH="unix:path=/run/user/$(id -u "$SUDO_USER")/bus"
     # Jump to verification section (we'll use a function)
@@ -2254,9 +2254,9 @@ chown -R "$SUDO_USER:$SUDO_USER" "$USER_LOG_DIR"
 # --- 7b. Create DNF Wrapper for Manual Updates ---
 log_info ">>> Creating dnf wrapper script for manual updates..."
 update_status "Creating dnf wrapper..."
-ZYPPER_WRAPPER_PATH="$USER_BIN_DIR/dnf-with-ps"
-log_debug "Writing dnf wrapper to: $ZYPPER_WRAPPER_PATH"
-cat << 'EOF' > "$ZYPPER_WRAPPER_PATH"
+DNF_WRAPPER_PATH="$USER_BIN_DIR/dnf-with-ps"
+log_debug "Writing dnf wrapper to: $DNF_WRAPPER_PATH"
+cat << 'EOF' > "$DNF_WRAPPER_PATH"
 #!/usr/bin/env bash
 # Wrapper that runs DNF for system updates and shows which services need restarting
 
@@ -2600,9 +2600,9 @@ else
     sudo /usr/bin/dnf "$@"
 fi
 EOF
-chown "$SUDO_USER:$SUDO_USER" "$ZYPPER_WRAPPER_PATH"
-chmod +x "$ZYPPER_WRAPPER_PATH"
-log_success "Zypper wrapper script created and made executable"
+chown "$SUDO_USER:$SUDO_USER" "$DNF_WRAPPER_PATH"
+chmod +x "$DNF_WRAPPER_PATH"
+log_success "DNF wrapper script created and made executable"
 
 # Add shell alias/function to user's shell config
 log_info ">>> Adding dnf alias to shell configurations..."
@@ -2615,11 +2615,11 @@ if [ -f "$SUDO_USER_HOME/.bashrc" ]; then
     sed -i '/# Zypper wrapper for auto service check/d' "$SUDO_USER_HOME/.bashrc" || true
     sed -i '/alias zypper=/d' "$SUDO_USER_HOME/.bashrc" || true
     sed -i '/# DNF wrapper for auto service check/d' "$SUDO_USER_HOME/.bashrc" || true
-    sed -i "/alias dnf='$ZYPPER_WRAPPER_PATH'/d" "$SUDO_USER_HOME/.bashrc" || true
+    sed -i "/alias dnf='$DNF_WRAPPER_PATH'/d" "$SUDO_USER_HOME/.bashrc" || true
     # Add new alias
     echo "" >> "$SUDO_USER_HOME/.bashrc"
     echo "# DNF wrapper for auto service check (added by dnf-auto-helper)" >> "$SUDO_USER_HOME/.bashrc"
-    echo "alias dnf='$ZYPPER_WRAPPER_PATH'" >> "$SUDO_USER_HOME/.bashrc"
+    echo "alias dnf='$DNF_WRAPPER_PATH'" >> "$SUDO_USER_HOME/.bashrc"
     chown "$SUDO_USER:$SUDO_USER" "$SUDO_USER_HOME/.bashrc"
     log_success "Added dnf alias to .bashrc"
 fi
@@ -2663,11 +2663,11 @@ if [ -f "$SUDO_USER_HOME/.zshrc" ]; then
     sed -i '/# Zypper wrapper for auto service check/d' "$SUDO_USER_HOME/.zshrc" || true
     sed -i '/alias zypper=/d' "$SUDO_USER_HOME/.zshrc" || true
     sed -i '/# DNF wrapper for auto service check/d' "$SUDO_USER_HOME/.zshrc" || true
-    sed -i "/alias dnf='$ZYPPER_WRAPPER_PATH'/d" "$SUDO_USER_HOME/.zshrc" || true
+    sed -i "/alias dnf='$DNF_WRAPPER_PATH'/d" "$SUDO_USER_HOME/.zshrc" || true
     # Add new alias
     echo "" >> "$SUDO_USER_HOME/.zshrc"
     echo "# DNF wrapper for auto service check (added by dnf-auto-helper)" >> "$SUDO_USER_HOME/.zshrc"
-    echo "alias dnf='$ZYPPER_WRAPPER_PATH'" >> "$SUDO_USER_HOME/.zshrc"
+    echo "alias dnf='$DNF_WRAPPER_PATH'" >> "$SUDO_USER_HOME/.zshrc"
     chown "$SUDO_USER:$SUDO_USER" "$SUDO_USER_HOME/.zshrc"
     log_success "Added dnf alias to .zshrc"
 fi
@@ -5707,7 +5707,7 @@ if [ ${#MISSING_PACKAGES[@]} -gt 0 ]; then
             -u normal \
             -t 15000 \
             -i "dialog-information" \
-            "Zypper Auto-Helper: Optional Packages" \
+            "DNF Auto-Helper: Optional Packages" \
             "${MISSING_MSG}" 2>/dev/null || true
     fi
 
