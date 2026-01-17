@@ -3858,7 +3858,7 @@ def parse_output(output: str, include_preview: bool = True):
     log_debug("Parsing dnf output...")
     
     if "Nothing to do." in output:
-        log_info("No updates found in zypper output")
+        log_info("No updates found in dnf output")
         return None, None, None, 0
 
     # Count Packages
@@ -3870,25 +3870,14 @@ def parse_output(output: str, include_preview: bool = True):
         log_info("No packages to upgrade (count is 0)")
         return None, None, None, 0
 
-    # Find Snapshot
-    snapshot_match = None
-    # Preferred: product line such as
-    #   openSUSE Tumbleweed  20251227-0 -> 20251228-0
-    product_match = re.search(r"openSUSE Tumbleweed\s+\S+\s*->\s*([0-9T\-]+)", output)
-    if product_match:
-        snapshot_match = product_match
-    else:
-        # Fallback: older tumbleweed-release pattern
-        snapshot_match = re.search(r"tumbleweed-release.*->\s*([\dTb\-]+)", output)
-    snapshot = snapshot_match.group(1) if snapshot_match else ""
+    # Fedora/DNF: we don't try to parse an OS snapshot/version from the
+    # preview output; leave snapshot empty and use a generic title.
+    snapshot = ""
 
-    log_info(
-        f"Found {package_count} packages to upgrade"
-        + (f" (snapshot: {snapshot})" if snapshot else "")
-    )
+    log_info(f"Found {package_count} packages to upgrade")
 
     # Build strings
-    title = f"Snapshot {snapshot} Ready" if snapshot else "Updates Ready to Install"
+    title = "Updates Ready to Install"
 
     if package_count == 1:
         message = "1 update is pending."
@@ -4219,10 +4208,10 @@ def main():
                             log_debug("Verifying pending updates for downloads-complete status...")
                             preview_cmd = [
                                 "pkexec",
-                                "zypper",
-                                "--non-interactive",
-                                "dup",
-                                "--dry-run",
+                                "/usr/bin/dnf",
+                                "-q",
+                                "upgrade",
+                                "--assumeno",
                                 *DUP_EXTRA_FLAGS,
                             ]
                             result = subprocess.run(
