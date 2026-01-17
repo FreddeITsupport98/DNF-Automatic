@@ -322,9 +322,13 @@ DOWNLOADER_DOWNLOAD_MODE=full
 #   - Do NOT include "--non-interactive", "--download-only" or "--dry-run"
 #     here; those are added automatically by the helper where needed.
 #   - If you set multiple flags, write them exactly as you would on the
-#     command line, for example:
+#         command line, for example:
 #         DUP_EXTRA_FLAGS="--allow-vendor-change --no-allow-vendor-change"
-DUP_EXTRA_FLAGS=""
+#
+# By default we include "--refresh" so every background check behaves like
+# "dnf upgrade --refresh --assumeno", ensuring all enabled repositories
+# are freshly consulted.
+DUP_EXTRA_FLAGS="--refresh"
 EOF
         # Ensure config file has safe permissions (root-writable only)
         chmod 644 "${CONFIG_FILE}" || true
@@ -532,7 +536,8 @@ EOF
         for key in "${missing_keys[@]}"; do
             case "$key" in
                 DUP_EXTRA_FLAGS)
-                    DUP_EXTRA_FLAGS=""
+                    # Match template default: always refresh repositories
+                    DUP_EXTRA_FLAGS="--refresh"
                     ;;
                 LOCK_RETRY_MAX_ATTEMPTS)
                     LOCK_RETRY_MAX_ATTEMPTS=10
@@ -1738,7 +1743,15 @@ check_and_install "upower" "upower" "checking AC power"
 check_and_install "inxi" "inxi" "hardware and network detection"
 check_and_install "python3" "python3" "running the notifier script"
 check_and_install "pkexec" "polkit" "graphical authentication"
-check_and_install "needs-restarting" "dnf-plugins-core" "detecting services that need restarting"
+# On newer Fedora with dnf5, many plugins are built-in and
+# 'needs-restarting' may not come from dnf-plugins-core anymore.
+# Only require it when the legacy dnf4 stack is in use; otherwise
+# treat it as optional and skip auto-install.
+if command -v dnf5 >/dev/null 2>&1; then
+    log_info "Skipping hard dependency on 'needs-restarting' under dnf5 (optional feature)."
+else
+    check_and_install "needs-restarting" "dnf-plugins-core" "detecting services that need restarting"
+fi
 check_and_install "semanage" "policycoreutils-python-utils" "managing SELinux file contexts (semanage)"
 
 # Check Python version (must be 3.7+)
@@ -1787,6 +1800,17 @@ update_status "All dependencies verified"
 log_info ">>> Cleaning up old log files..."
 update_status "Cleaning up old installation logs..."
 cleanup_old_logs
+
+# --- 3b. Disable conflicting background updaters (PackageKit) ---
+# To avoid constant DNF lock contention, proactively disable common
+# PackageKit-based background services. This leaves interactive GUI
+# tools installable, but stops them from automatically grabbing the
+# system management lock behind the scenes.
+log_info ">>> Disabling PackageKit background services to avoid DNF lock conflicts..."
+update_status "Disabling PackageKit background services..."
+systemctl disable --now packagekit.service packagekit-offline-update.service packagekit-background.service \
+    >> "${LOG_FILE}" 2>&1 || true
+log_success "PackageKit background services disabled (or not present)"
 
 # --- 4. Clean Up ALL Previous Versions (System & User) ---
 log_info ">>> Cleaning up all old system-wide services..."
@@ -1918,8 +1942,8 @@ trigger_notifier() {
 handle_lock_or_fail() {
     local err_file="$1"
 
-    # Common dnf/PackageKit lock messages
-    if grep -qiE 'System management is locked|Another app is currently holding the dnf lock|dnf is locked by another process|Existing lock' "$err_file" 2>/dev/null; then
+    # Common dnf/PackageKit lock messages (Fedora variants)
+    if grep -qiE 'System management is locked|System management is currently locked by another update tool|Another app is currently holding the dnf lock|dnf is locked by another process|Existing lock' "$err_file" 2>/dev/null; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Package manager is locked by another process; skipping this downloader run (will retry on next timer)" >&2
         echo "idle" > "$STATUS_FILE"
         rm -f "$err_file"
@@ -1939,21 +1963,50 @@ if ! /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 /usr/bin/dnf -q makecache >/de
     # error here.
     handle_lock_or_fail "$REFRESH_ERR"
 
-    # At this point we know the error was not a simple lock. Classify it
-    # as a network/repository problem so the notifier can surface a clear
-    # error message instead of silently doing nothing.
-    if grep -qi "could not resolve host" "$REFRESH_ERR" || \
-       grep -qi "Failed to retrieve new repository metadata" "$REFRESH_ERR"; then
-        echo "error:network" > "$STATUS_FILE"
-    else
-        echo "error:repo" > "$STATUS_FILE"
+    # At this point we know the error was not a simple lock. Before we
+    # surface an error to the user, try a lightweight auto-repair by
+    # cleaning stale repository metadata once and retrying the refresh.
+    if grep -qiE 'Failed to retrieve new repository metadata|repomd\\.xml' "$REFRESH_ERR"; then
+        # Best-effort metadata cleanup; ignore failures here because the
+        # second makecache run below will still surface any remaining
+        # error in a controlled way.
+        dnf clean metadata >/dev/null 2>&1 || true
+
+        # Retry makecache once after cleaning metadata.
+        REFRESH_ERR_RETRY=$(mktemp)
+        if /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 /usr/bin/dnf -q makecache >/dev/null 2>"$REFRESH_ERR_RETRY"; then
+            # Auto-repair succeeded; clear error state and continue with
+            # the normal workflow so the notifier sees a healthy status.
+            rm -f "$REFRESH_ERR" "$REFRESH_ERR_RETRY"
+            goto_after_refresh_success=1
+        else
+            # Merge retry diagnostics into the main error log for easier
+            # debugging, then fall through to normal classification.
+            cat "$REFRESH_ERR_RETRY" >> "$REFRESH_ERR" 2>/dev/null || true
+            rm -f "$REFRESH_ERR_RETRY"
+        fi
     fi
 
-    cat "$REFRESH_ERR" >&2 || true
-    rm -f "$REFRESH_ERR"
-    # Exit 0 so systemd does not mark the service failed; the notifier
-    # will pick up the error:* status on the next run.
-    exit 0
+    # If the retry path marked a successful refresh, skip error
+    # classification entirely.
+    if [ "${goto_after_refresh_success:-0}" -eq 1 ]; then
+        : # no-op; jump to the common success path below
+    else
+        # Classify as a network/repository problem so the notifier can
+        # surface a clear error message instead of silently doing nothing.
+        if grep -qi "could not resolve host" "$REFRESH_ERR" || \
+           grep -qi "Failed to retrieve new repository metadata" "$REFRESH_ERR"; then
+            echo "error:network" > "$STATUS_FILE"
+        else
+            echo "error:repo" > "$STATUS_FILE"
+        fi
+
+        cat "$REFRESH_ERR" >&2 || true
+        rm -f "$REFRESH_ERR"
+        # Exit 0 so systemd does not mark the service failed; the notifier
+        # will pick up the error:* status on the next run.
+        exit 0
+    fi
 fi
 rm -f "$REFRESH_ERR"
 
@@ -1965,18 +2018,39 @@ if ! /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 /usr/bin/dnf -q upgrade --assu
     # and exit 0 so we do not need to set an additional error state.
     handle_lock_or_fail "$DRY_ERR"
 
-    # Non-lock failure at the preview stage – mirror the refresh handling
-    # so the notifier can display a meaningful error notification.
-    if grep -qi "could not resolve host" "$DRY_ERR" || \
-       grep -qi "Failed to synchronize cache" "$DRY_ERR"; then
-        echo "error:network" > "$STATUS_FILE"
-    else
-        echo "error:repo" > "$STATUS_FILE"
+    # At this point we know the error was not a simple lock. Before we
+    # surface an error to the user, try the same lightweight auto-repair
+    # used for metadata refresh: clean stale repo metadata once and retry
+    # the preview.
+    if grep -qiE 'Failed to synchronize cache|Failed to download metadata|repomd\\.xml' "$DRY_ERR"; then
+        dnf clean metadata >/dev/null 2>&1 || true
+
+        DRY_ERR_RETRY=$(mktemp)
+        if /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 /usr/bin/dnf -q upgrade --assumeno $DUP_EXTRA_FLAGS > "$DRY_OUTPUT" 2>"$DRY_ERR_RETRY"; then
+            # Auto-repair on preview succeeded; clear error state and
+            # continue as if the original preview had worked.
+            rm -f "$DRY_ERR" "$DRY_ERR_RETRY"
+        else
+            cat "$DRY_ERR_RETRY" >> "$DRY_ERR" 2>/dev/null || true
+            rm -f "$DRY_ERR_RETRY"
+        fi
     fi
 
-    cat "$DRY_ERR" >&2 || true
-    rm -f "$DRY_ERR" "$DRY_OUTPUT"
-    exit 0
+    # Re-check whether the preview still failed after optional repair.
+    if [ -s "$DRY_ERR" ]; then
+        # Non-lock failure at the preview stage – classify it so the
+        # notifier can display a meaningful error notification.
+        if grep -qi "could not resolve host" "$DRY_ERR" || \
+           grep -qi "Failed to synchronize cache" "$DRY_ERR"; then
+            echo "error:network" > "$STATUS_FILE"
+        else
+            echo "error:repo" > "$STATUS_FILE"
+        fi
+
+        cat "$DRY_ERR" >&2 || true
+        rm -f "$DRY_ERR" "$DRY_OUTPUT"
+        exit 0
+    fi
 fi
 rm -f "$DRY_ERR"
 
@@ -4387,9 +4461,9 @@ def main():
                     # slightly different message.
                     log_error("Background downloader reported a repository error while checking for updates")
                     msg = (
-                        "The background updater hit an error while talking to configured repositories.\n\n"\
-                        "DNF reported repository failures or invalid metadata.\n\n"\
-                        "Run 'sudo dnf upgrade --refresh --assumeno' in a terminal for full details."
+                        "The background updater hit an error while talking to configured repositories.\\n\\n"\
+                        "DNF reported repository failures or invalid metadata.\\n\\n"\
+                        "Run 'sudo dnf upgrade --refresh' in a terminal for full details and to resolve the issue."\
                     )
                     n = Notify.Notification.new(
                         "Update check failed (repositories)",
