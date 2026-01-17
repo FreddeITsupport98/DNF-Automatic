@@ -12,10 +12,10 @@
 set -euo pipefail
 
 # --- Logging / Configuration Defaults ---
-LOG_DIR="/var/log/zypper-auto"
+LOG_DIR="/var/log/dnf-auto"
 LOG_FILE="${LOG_DIR}/install-$(date +%Y%m%d-%H%M%S).log"
 STATUS_FILE="${LOG_DIR}/last-status.txt"
-MAX_LOG_FILES=10  # Keep only the last 10 log files (overridable via /etc/zypper-auto.conf)
+MAX_LOG_FILES=10  # Keep only the last 10 log files (overridable via /etc/dnf-auto.conf)
 MAX_LOG_SIZE_MB=50  # Maximum size for a single log file in MB (overridable)
 
 # Accumulator for any configuration warnings so we can surface them
@@ -27,7 +27,7 @@ DL_TIMER_INTERVAL_MINUTES=1
 NT_TIMER_INTERVAL_MINUTES=1
 
 # Global config file (optional but recommended for advanced users)
-CONFIG_FILE="/etc/zypper-auto.conf"
+CONFIG_FILE="/etc/dnf-auto.conf"
 
 # Feature toggles (may be overridden by CONFIG_FILE)
 ENABLE_FLATPAK_UPDATES="true"
@@ -79,7 +79,7 @@ cleanup_old_logs() {
 
 # Initialize log file
 echo "==============================================" | tee "${LOG_FILE}"
-echo "Zypper Auto-Helper Installation Log" | tee -a "${LOG_FILE}"
+echo "DNF Auto-Helper Installation Log" | tee -a "${LOG_FILE}"
 echo "Started: $(date)" | tee -a "${LOG_FILE}"
 echo "Log file: ${LOG_FILE}" | tee -a "${LOG_FILE}"
 echo "==============================================" | tee -a "${LOG_FILE}"
@@ -119,16 +119,16 @@ log_command() {
 load_config() {
     if [ -f "${CONFIG_FILE}" ]; then
         log_info "Loading configuration from ${CONFIG_FILE}"
-        # shellcheck source=/etc/zypper-auto.conf
+# shellcheck source=/etc/dnf-auto.conf
         . "${CONFIG_FILE}"
     else
         log_info "No configuration found at ${CONFIG_FILE}; generating default config"
         cat > "${CONFIG_FILE}" << 'EOF'
-# zypper-auto-helper configuration
+# dnf-auto-helper configuration
 #
 # All values in this file are read by the installer at runtime. You can
 # safely edit them and re-run:
-#   sudo ./zypper-auto.sh install
+#   sudo ./DNF-auto.sh install
 # to apply changes. Invalid values fall back to safe defaults and are
 # reported in the install log and last-status.txt.
 #
@@ -172,7 +172,7 @@ ENABLE_PIPX_UPDATES=true
 # ---------------------------------------------------------------------
 
 # DL_TIMER_INTERVAL_MINUTES
-# How often (in minutes) the *root* downloader (zypper-autodownload.timer)
+# How often (in minutes) the *root* downloader (dnf-autodownload.timer)
 # should run. Allowed values (MUST be one of these exact integers):
 #   1,5,10,15,30,60
 #   1  = every minute (minutely)
@@ -185,7 +185,7 @@ ENABLE_PIPX_UPDATES=true
 DL_TIMER_INTERVAL_MINUTES=1
 
 # NT_TIMER_INTERVAL_MINUTES
-# How often (in minutes) the *user* notifier (zypper-notify-user.timer)
+# How often (in minutes) the *user* notifier (dnf-notify-user.timer)
 # should run to check for updates and send notifications.
 # Uses the same allowed values and rules as above (MUST be exactly one of
 # 1,5,10,15,30,60; anything else falls back to a safe default).
@@ -193,7 +193,7 @@ NT_TIMER_INTERVAL_MINUTES=1
 
 # VERIFY_TIMER_INTERVAL_MINUTES
 # How often (in minutes) the verification/auto-repair timer
-# (zypper-auto-verify.timer) should run. Allowed values (MUST be one of
+# (dnf-auto-verify.timer) should run.
 # these exact integers): 1,5,10,15,30,60.
 #   1  = every minute (minutely)
 #   5  = every 5 minutes
@@ -209,13 +209,13 @@ VERIFY_TIMER_INTERVAL_MINUTES=60
 # ---------------------------------------------------------------------
 
 # MAX_LOG_FILES
-# Maximum number of install-*.log files to keep under /var/log/zypper-auto.
+# Maximum number of install-*.log files to keep under /var/log/dnf-auto.
 # Older logs beyond this count are deleted automatically on each install.
 MAX_LOG_FILES=10
 
 # MAX_LOG_SIZE_MB
 # Maximum size (in megabytes) for individual service logs under
-# /var/log/zypper-auto/service-logs. Very large logs are rotated to
+# /var/log/dnf-auto/service-logs.
 # *.old when they exceed this size.
 MAX_LOG_SIZE_MB=50
 
@@ -224,8 +224,8 @@ MAX_LOG_SIZE_MB=50
 # ---------------------------------------------------------------------
 
 # CACHE_EXPIRY_MINUTES
-# The notifier caches the result of "zypper dup --dry-run" to avoid
-# hitting zypper too often. This value controls how long (in minutes)
+# The notifier caches the result of the dnf preview command to avoid
+# hitting dnf too often.
 # a cached result is considered valid before forcing a fresh check.
 # Higher values = fewer zypper runs but potentially more stale info.
 CACHE_EXPIRY_MINUTES=10
@@ -468,7 +468,7 @@ EOF
     # Detect older/stale config files that are missing newer keys.
     # We do NOT overwrite the config automatically; instead we collect
     # warnings and suggest using the reset helper so the user can
-    # consciously regenerate `/etc/zypper-auto.conf`.
+# consciously regenerate `/etc/dnf-auto.conf`.
     local missing_keys=()
 
     # Helper: record a key as missing if it is not defined at all.
@@ -493,7 +493,7 @@ EOF
         local keys_joined
         keys_joined="${missing_keys[*]}"
         local msg
-        msg="${CONFIG_FILE} appears to be from an older version (missing keys: ${keys_joined}). Run 'sudo zypper-auto-helper --reset-config' to regenerate it with the latest options."
+msg="${CONFIG_FILE} appears to be from an older version (missing keys: ${keys_joined}). Run 'sudo dnf-auto-helper --reset-config' to regenerate it with the latest options."
         log_info "$msg"
         CONFIG_WARNINGS+=("$msg")
 
@@ -551,24 +551,24 @@ update_status() {
 trap 'log_error "Script failed at line $LINENO with exit code $?"; update_status "FAILED: Installation encountered an error at line $LINENO"; exit 1' ERR
 
 # --- Root/System Service Config ---
-DL_SERVICE_NAME="zypper-autodownload"
+DL_SERVICE_NAME="dnf-autodownload"
 DL_SERVICE_FILE="/etc/systemd/system/${DL_SERVICE_NAME}.service"
 DL_TIMER_FILE="/etc/systemd/system/${DL_SERVICE_NAME}.timer"
 
-CLEANUP_SERVICE_NAME="zypper-cache-cleanup"
+CLEANUP_SERVICE_NAME="dnf-cache-cleanup"
 CLEANUP_SERVICE_FILE="/etc/systemd/system/${CLEANUP_SERVICE_NAME}.service"
 CLEANUP_TIMER_FILE="/etc/systemd/system/${CLEANUP_SERVICE_NAME}.timer"
 
 # Periodic verification / auto-repair service (root)
-VERIFY_SERVICE_NAME="zypper-auto-verify"
+VERIFY_SERVICE_NAME="dnf-auto-verify"
 VERIFY_SERVICE_FILE="/etc/systemd/system/${VERIFY_SERVICE_NAME}.service"
 VERIFY_TIMER_FILE="/etc/systemd/system/${VERIFY_SERVICE_NAME}.timer"
 
 # --- User Service Config ---
-NT_SERVICE_NAME="zypper-notify-user"
-NT_SCRIPT_NAME="zypper-notify-updater.py"
-INSTALL_SCRIPT_NAME="zypper-run-install"
-VIEW_CHANGES_SCRIPT_NAME="zypper-view-changes"
+NT_SERVICE_NAME="dnf-notify-user"
+NT_SCRIPT_NAME="dnf-notify-updater.py"
+INSTALL_SCRIPT_NAME="dnf-run-install"
+VIEW_CHANGES_SCRIPT_NAME="dnf-view-changes"
 
 # --- 2. Sanity Checks & User Detection ---
 update_status "Running sanity checks..."
@@ -1066,11 +1066,11 @@ run_reset_config_only() {
     load_config
 
     log_success "Configuration reset to defaults in ${CONFIG_FILE}"
-    update_status "SUCCESS: zypper-auto-helper configuration reset to defaults"
+update_status "SUCCESS: dnf-auto-helper configuration reset to defaults"
 
     echo "" | tee -a "${LOG_FILE}"
     echo "You can now re-run installation to apply the new settings:" | tee -a "${LOG_FILE}"
-    echo "  sudo ./zypper-auto.sh install" | tee -a "${LOG_FILE}"
+echo "  sudo ./DNF-auto.sh install" | tee -a "${LOG_FILE}"
 }
 
 # --- Helper: Soar-only installation mode (CLI) ---
@@ -1122,17 +1122,17 @@ run_soar_install_only() {
     fi
 }
 
-# --- Helper: Uninstall core zypper-auto-helper components ---
+# --- Helper: Uninstall core dnf-auto-helper components ---
 run_uninstall_helper_only() {
-    log_info ">>> Uninstalling zypper-auto-helper core components..."
+log_info ">>> Uninstalling dnf-auto-helper core components..."
 
     echo "" | tee -a "${LOG_FILE}"
     echo "==============================================" | tee -a "${LOG_FILE}"
-    echo "  zypper-auto-helper Uninstall" | tee -a "${LOG_FILE}"
+echo "  dnf-auto-helper Uninstall" | tee -a "${LOG_FILE}"
     echo "==============================================" | tee -a "${LOG_FILE}"
     echo "This will remove timers, services, helper binaries, logs, and user" | tee -a "${LOG_FILE}"
-    echo "scripts/aliases installed by zypper-auto-helper for user $SUDO_USER." | tee -a "${LOG_FILE}"
-    echo "The installer script (zypper-auto.sh) and your Soar/Homebrew installs" | tee -a "${LOG_FILE}"
+echo "scripts/aliases installed by dnf-auto-helper for user $SUDO_USER." | tee -a "${LOG_FILE}"
+echo "The installer script (DNF-auto.sh) and your Soar/Homebrew installs" | tee -a "${LOG_FILE}"
     echo "will be left untouched. It also does NOT remove snapd, Flatpak, Soar," | tee -a "${LOG_FILE}"
     echo "Homebrew itself, or any zypper configuration such as /etc/zypp/zypper.conf." | tee -a "${LOG_FILE}"
     echo "" | tee -a "${LOG_FILE}"
@@ -1145,10 +1145,10 @@ run_uninstall_helper_only() {
         echo "  - System services/timers: zypper-autodownload.service, zypper-autodownload.timer" | tee -a "${LOG_FILE}"
         echo "    zypper-cache-cleanup.service, zypper-cache-cleanup.timer" | tee -a "${LOG_FILE}"
         echo "    zypper-auto-verify.service, zypper-auto-verify.timer" | tee -a "${LOG_FILE}"
-        echo "  - Root binaries: /usr/local/bin/zypper-download-with-progress, /usr/local/bin/zypper-auto-helper" | tee -a "${LOG_FILE}"
+echo "  - Root binaries: /usr/local/bin/zypper-download-with-progress, /usr/local/bin/dnf-auto-helper" | tee -a "${LOG_FILE}"
         echo "  - User units: $SUDO_USER_HOME/.config/systemd/user/zypper-notify-user.service/timer" | tee -a "${LOG_FILE}"
-        echo "  - Helper scripts: $SUDO_USER_HOME/.local/bin/zypper-notify-updater.py, zypper-run-install," | tee -a "${LOG_FILE}"
-        echo "    zypper-with-ps, zypper-view-changes, zypper-soar-install-helper" | tee -a "${LOG_FILE}"
+echo "  - Helper scripts: $SUDO_USER_HOME/.local/bin/dnf-notify-updater.py, dnf-run-install," | tee -a "${LOG_FILE}"
+echo "    zypper-with-ps, dnf-view-changes, zypper-soar-install-helper" | tee -a "${LOG_FILE}"
         if [ "${UNINSTALL_KEEP_LOGS:-0}" -eq 1 ]; then
             echo "  - Logs under $LOG_DIR would be LEFT IN PLACE (--keep-logs)" | tee -a "${LOG_FILE}"
         else
@@ -1156,23 +1156,23 @@ run_uninstall_helper_only() {
         fi
         echo "" | tee -a "${LOG_FILE}"
         echo "Run again WITHOUT --dry-run to actually uninstall." | tee -a "${LOG_FILE}"
-        update_status "DRY-RUN: zypper-auto-helper uninstall (no changes made)"
+update_status "DRY-RUN: dnf-auto-helper uninstall (no changes made)"
         return 0
     fi
 
     if [ "${UNINSTALL_ASSUME_YES:-0}" -ne 1 ]; then
-        read -p "Are you sure you want to uninstall zypper-auto-helper components? [y/N]: " -r CONFIRM
+read -p "Are you sure you want to uninstall dnf-auto-helper components? [y/N]: " -r CONFIRM
         echo
         if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
             log_info "Uninstall aborted by user. No changes made."
-            update_status "ABORTED: zypper-auto-helper uninstall cancelled by user"
+update_status "ABORTED: dnf-auto-helper uninstall cancelled by user"
             return 0
         fi
     else
         log_info "Non-interactive mode: proceeding without confirmation (--yes)."
     fi
 
-    update_status "Uninstalling zypper-auto-helper components..."
+update_status "Uninstalling dnf-auto-helper components..."
 
     # 1. Stop and disable root timers/services
     log_debug "Disabling root timers and services..."
@@ -1201,14 +1201,14 @@ run_uninstall_helper_only() {
     rm -f /etc/systemd/system/zypper-auto-verify.service >> "${LOG_FILE}" 2>&1 || true
     rm -f /etc/systemd/system/zypper-auto-verify.timer >> "${LOG_FILE}" 2>&1 || true
     rm -f /usr/local/bin/zypper-download-with-progress >> "${LOG_FILE}" 2>&1 || true
-    rm -f /usr/local/bin/zypper-auto-helper >> "${LOG_FILE}" 2>&1 || true
+rm -f /usr/local/bin/dnf-auto-helper >> "${LOG_FILE}" 2>&1 || true
 
     # 4. Remove user-level scripts and systemd units
     if [ -n "${SUDO_USER_HOME:-}" ]; then
         log_debug "Removing user scripts and units under $SUDO_USER_HOME..."
         rm -f "$SUDO_USER_HOME/.config/systemd/user/zypper-notify-user.service" >> "${LOG_FILE}" 2>&1 || true
         rm -f "$SUDO_USER_HOME/.config/systemd/user/zypper-notify-user.timer" >> "${LOG_FILE}" 2>&1 || true
-        rm -f "$SUDO_USER_HOME/.local/bin/zypper-notify-updater.py" >> "${LOG_FILE}" 2>&1 || true
+rm -f "$SUDO_USER_HOME/.local/bin/dnf-notify-updater.py" >> "${LOG_FILE}" 2>&1 || true
         rm -f "$SUDO_USER_HOME/.local/bin/zypper-run-install" >> "${LOG_FILE}" 2>&1 || true
         rm -f "$SUDO_USER_HOME/.local/bin/zypper-with-ps" >> "${LOG_FILE}" 2>&1 || true
         rm -f "$SUDO_USER_HOME/.local/bin/zypper-view-changes" >> "${LOG_FILE}" 2>&1 || true
@@ -1243,8 +1243,8 @@ run_uninstall_helper_only() {
         fi
     fi
     if [ -n "${SUDO_USER_HOME:-}" ]; then
-        rm -rf "$SUDO_USER_HOME/.local/share/zypper-notify" >> "${LOG_FILE}" 2>&1 || true
-        rm -rf "$SUDO_USER_HOME/.cache/zypper-notify" >> "${LOG_FILE}" 2>&1 || true
+rm -rf "$SUDO_USER_HOME/.local/share/dnf-notify" >> "${LOG_FILE}" 2>&1 || true
+rm -rf "$SUDO_USER_HOME/.cache/dnf-notify" >> "${LOG_FILE}" 2>&1 || true
     fi
 
     # 6. Reload systemd daemons
@@ -1258,14 +1258,14 @@ run_uninstall_helper_only() {
     # 7. Clear any failed state in systemd for the removed units so
     #    `systemctl --user status` looks clean after uninstall.
     log_debug "Resetting failed state for removed systemd units (if any)..."
-    systemctl reset-failed zypper-autodownload.service zypper-cache-cleanup.service zypper-auto-verify.service >> "${LOG_FILE}" 2>&1 || true
+systemctl reset-failed dnf-autodownload.service dnf-cache-cleanup.service dnf-auto-verify.service >> "${LOG_FILE}"
     if [ -n "${SUDO_USER:-}" ]; then
         sudo -u "$SUDO_USER" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u "$SUDO_USER")/bus" \
-            systemctl --user reset-failed zypper-notify-user.service >> "${LOG_FILE}" 2>&1 || true
+systemctl --user reset-failed dnf-notify-user.service >> "${LOG_FILE}"
     fi
 
-    log_success "Core zypper-auto-helper components uninstalled (installer script left in place)."
-    update_status "SUCCESS: zypper-auto-helper core components uninstalled"
+log_success "Core dnf-auto-helper components uninstalled (installer script left in place)."
+update_status "SUCCESS: dnf-auto-helper core components uninstalled"
 
     echo "" | tee -a "${LOG_FILE}"
     echo "Uninstall summary:" | tee -a "${LOG_FILE}"
@@ -2608,8 +2608,8 @@ update_status "Configuring zypper-auto-helper aliases..."
 if [ -f "$SUDO_USER_HOME/.bashrc" ]; then
     log_debug "Adding zypper-auto-helper alias to .bashrc"
     # Remove old alias if it exists
-    sed -i '/# zypper-auto-helper command alias/d' "$SUDO_USER_HOME/.bashrc"
-    sed -i '/alias zypper-auto-helper=/d' "$SUDO_USER_HOME/.bashrc"
+sed -i '/# dnf-auto-helper command alias/d' "$SUDO_USER_HOME/.bashrc"
+sed -i '/alias dnf-auto-helper=/d' "$SUDO_USER_HOME/.bashrc"
     # Add new alias
     echo "" >> "$SUDO_USER_HOME/.bashrc"
     echo "# zypper-auto-helper command alias (added by zypper-auto-helper)" >> "$SUDO_USER_HOME/.bashrc"
@@ -2634,8 +2634,8 @@ fi
 if [ -f "$SUDO_USER_HOME/.zshrc" ]; then
     log_debug "Adding zypper-auto-helper alias to .zshrc"
     # Remove old alias if it exists
-    sed -i '/# zypper-auto-helper command alias/d' "$SUDO_USER_HOME/.zshrc"
-    sed -i '/alias zypper-auto-helper=/d' "$SUDO_USER_HOME/.zshrc"
+sed -i '/# dnf-auto-helper command alias/d' "$SUDO_USER_HOME/.zshrc"
+sed -i '/alias dnf-auto-helper=/d' "$SUDO_USER_HOME/.zshrc"
     # Add new alias
     echo "" >> "$SUDO_USER_HOME/.zshrc"
     echo "# zypper-auto-helper command alias (added by zypper-auto-helper)" >> "$SUDO_USER_HOME/.zshrc"
@@ -4360,7 +4360,7 @@ def main():
                         "or click 'Install Now' to open the helper, then follow zypper's prompts to resolve the conflicts."
                     )
 
-                    action_script = os.path.expanduser("~/.local/bin/zypper-run-install")
+action_script = os.path.expanduser("~/.local/bin/dnf-run-install")
 
                     n = Notify.Notification.new(
                         title,
@@ -4497,7 +4497,7 @@ def main():
         _write_last_notification(title, message)
 
         # Get the path to the action script
-        action_script = os.path.expanduser("~/.local/bin/zypper-run-install")
+action_script = os.path.expanduser("~/.local/bin/dnf-run-install")
 
         # Create the notification with a stable ID so it replaces the previous one
         log_debug(f"Creating notification: {title}")
@@ -4539,8 +4539,8 @@ def main():
         log_error(f"Traceback: {traceback.format_exc()}")
     finally:
         log_info("Shutting down notification system")
-        Notify.uninit()
-        log_info("Zypper Notify Updater finished")
+Notify.uninit()
+        log_info("DNF Notify Updater finished")
         log_info("=" * 60)
 
 if __name__ == "__main__":
@@ -4566,8 +4566,8 @@ if [ "${#CONFIG_WARNINGS[@]}" -gt 0 ]; then
     # notice the config issue and can fix or reset it.
     if command -v sudo >/dev/null 2>&1; then
         sudo -u "$SUDO_USER" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u "$SUDO_USER")/bus" \
-            notify-send "Zypper Auto-Helper config warnings" \
-            "Some settings in ${CONFIG_FILE} were invalid and reset to safe defaults.\n\nCheck the install log or run: zypper-auto-helper --reset-config" \
+notify-send "DNF Auto-Helper config warnings" \
+            "Some settings in ${CONFIG_FILE} were invalid and reset to safe defaults.\n\nCheck the install log or run: dnf-auto-helper --reset-config"
             >/dev/null 2>&1 || true
     fi
 fi
@@ -4582,7 +4582,7 @@ set -euo pipefail
 
 # Simple logging helper so we can debug why the install window may be
 # opening and closing immediately.
-LOG_FILE="$HOME/.local/share/zypper-notify/run-install.log"
+LOG_FILE="$HOME/.local/share/dnf-notify/run-install.log"
 LOG_DIR="$(dirname "$LOG_FILE")"
 mkdir -p "$LOG_DIR" 2>/dev/null || true
 log() {
@@ -4594,12 +4594,12 @@ log() {
     } || true
 }
 
-log "===== zypper-run-install started (PID $$) ====="
+log "===== dnf-run-install started (PID $$) ====="
 log "ENV: TERM=${TERM:-} DISPLAY=${DISPLAY:-} WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-} XDG_SESSION_TYPE=${XDG_SESSION_TYPE:-}"
 log "ENV: SHELL=${SHELL:-} USER=${USER:-} PWD=${PWD:-}"
 
 # Load feature toggles from the same config used by the installer.
-CONFIG_FILE="/etc/zypper-auto.conf"
+CONFIG_FILE="/etc/dnf-auto.conf"
 
 # Default feature toggles (can be overridden by CONFIG_FILE)
 ENABLE_FLATPAK_UPDATES="true"
@@ -4617,14 +4617,14 @@ fi
 TERMINALS=("konsole" "gnome-terminal" "kitty" "alacritty" "xterm")
 
 # Helper to detect whether system management is currently locked by
-# zypp/zypper (e.g. YaST, another zypper, systemd-zypp-refresh, etc.).
-ZYPP_LOCK_FILE="/run/zypp.pid"
+# another package manager (dnf, PackageKit, etc.).
+DNF_LOCK_FILE="/var/run/dnf.pid"
 
-has_zypp_lock() {
-    # Prefer the zypp.pid lock file, which is what YaST/zypper use.
-    if [ -f "$ZYPP_LOCK_FILE" ]; then
+has_pkg_lock() {
+    # Prefer the dnf.pid lock file when present.
+    if [ -f "$DNF_LOCK_FILE" ]; then
         local pid
-        pid=$(cat "$ZYPP_LOCK_FILE" 2>/dev/null || echo "")
+        pid=$(cat "$DNF_LOCK_FILE" 2>/dev/null || echo "")
         if [ -n "$pid" ]; then
             if kill -0 "$pid" 2>/dev/null; then
                 # Double-check that this PID really looks like a zypper/YaST
@@ -4632,37 +4632,33 @@ has_zypp_lock() {
                 local comm cmd
                 comm=$(ps -p "$pid" -o comm= 2>/dev/null || echo "")
                 cmd=$(ps -p "$pid" -o args= 2>/dev/null || echo "")
-                if printf '%s\n%s\n' "$comm" "$cmd" | grep -qiE 'zypper|yast|y2base|zypp|packagekitd'; then
-                    log "has_zypp_lock: zypp lock file $ZYPP_LOCK_FILE exists with live pid $pid (comm='$comm')"
+                if printf '%s\n%s\n' "$comm" "$cmd" | grep -qiE 'dnf|dnf-automatic|packagekitd'; then
+                        log "has_pkg_lock: package manager lock file $DNF_LOCK_FILE exists with live pid $pid (comm='$comm')"
                     return 0
                 fi
-                log "has_zypp_lock: ignoring non-zypp-looking process for lock file $ZYPP_LOCK_FILE (pid $pid, comm='$comm')"
+                log "has_pkg_lock: ignoring non-dnf-looking process for lock file $DNF_LOCK_FILE (pid $pid, comm='$comm')"
             else
-                log "has_zypp_lock: ignoring stale zypp lock file $ZYPP_LOCK_FILE with pid $pid"
+                log "has_pkg_lock: ignoring stale package-manager lock file $DNF_LOCK_FILE with pid $pid"
             fi
         else
-            log "has_zypp_lock: zypp lock file $ZYPP_LOCK_FILE present but empty"
+            log "has_pkg_lock: package-manager lock file $DNF_LOCK_FILE present but empty"
         fi
     fi
 
-    # Fallback: any obviously zypper/YaST/zypp-related process. This is a
-    # broader net than just "zypper" so we also catch YaST and zypp-refresh.
-    if pgrep -x zypper >/dev/null 2>&1; then
+    # Fallback: any obviously dnf/PackageKit related process.
+    if pgrep -x dnf >/dev/null 2>&1; then
         local zpid
-        zpid=$(pgrep -x zypper | head -n1 || true)
-        log "has_zypp_lock: detected running zypper process pid ${zpid:-unknown}"
+        zpid=$(pgrep -x dnf | head -n1 || true)
+        log "has_pkg_lock: detected running dnf process pid ${zpid:-unknown}"
         return 0
     fi
-    if pgrep -f -i 'yast' >/dev/null 2>&1; then
+    if pgrep -f -i 'packagekitd' >/dev/null 2>&1; then
         local ypid
-        ypid=$(pgrep -f -i 'yast' | head -n1 || true)
-        log "has_zypp_lock: detected running YaST process pid ${ypid:-unknown}"
+        ypid=$(pgrep -f -i 'packagekitd' | head -n1 || true)
+        log "has_pkg_lock: detected running PackageKit process pid ${ypid:-unknown}"
         return 0
     fi
-    if pgrep -f 'zypp.*refresh' >/dev/null 2>&1; then
-        local rpid
-        rpid=$(pgrep -f 'zypp.*refresh' | head -n1 || true)
-        log "has_zypp_lock: detected running zypp-refresh process pid ${rpid:-unknown}"
+    # No explicit zypp-refresh equivalent for dnf; rely on dnf and PackageKit above.
         return 0
     fi
 
@@ -4677,29 +4673,29 @@ RUN_UPDATE() {
     echo "=========================================="
     echo ""
     
-    # Track whether zypper failed specifically because of a lock so we can
+    # Track whether dnf failed specifically because of a lock so we can
     # show a clearer message later.
     LOCKED_DURING_UPDATE=0
     
     # Best-effort: stop the background downloader so it doesn't compete
-    # for the zypper lock while we're doing an interactive update.
-    log "RUN_UPDATE: stopping zypper-autodownload.service/timer to avoid lock conflicts"
+    # for the dnf lock while we're doing an interactive update.
+    log "RUN_UPDATE: stopping dnf-autodownload.service/timer to avoid lock conflicts"
     set +e
-    pkexec systemctl stop zypper-autodownload.service zypper-autodownload.timer >/dev/null 2>&1
+    pkexec systemctl stop dnf-autodownload.service dnf-autodownload.timer >/dev/null 2>&1
     set -e
 
-    # If any other zypper process is still running at this point (for example
-    # an open YaST or another terminal zypper), retry a few times with
+    # If any other package manager process is still running at this point (for example
+    # an open graphical updater or another terminal dnf), retry a few times with
     # increasing delays (1, 2, 3, ... seconds) before giving up and telling
     # the user what to do. The number of attempts and base delay are
     # controlled from /etc/zypper-auto.conf.
     max_attempts=${LOCK_RETRY_MAX_ATTEMPTS:-10}
     base_delay=${LOCK_RETRY_INITIAL_DELAY_SECONDS:-1}
     attempt=1
-    while has_zypp_lock && [ "$attempt" -le "$max_attempts" ]; do
+    while has_pkg_lock && [ "$attempt" -le "$max_attempts" ]; do
         delay=$((base_delay * attempt))
         echo ""
-        echo "System management is currently locked by another update tool (zypper/YaST/PackageKit)."
+        echo "System management is currently locked by another update tool (dnf/PackageKit)."
         echo "Retry $attempt/$max_attempts: waiting $delay second(s) for the other updater to finish..."
         log "RUN_UPDATE: lock still active before attempt $attempt/$max_attempts; sleeping ${delay}s"
         sleep "$delay"
@@ -4707,8 +4703,8 @@ RUN_UPDATE() {
     done
 
     # After retries, if a lock is still present, show a clear message and exit
-    # cleanly instead of letting pkexec/zypper print the raw lock error.
-    if has_zypp_lock; then
+    # cleanly instead of letting pkexec/dnf print the raw lock error.
+    if has_pkg_lock; then
         echo ""
         echo "System management is still locked by another update tool."
         echo "Close that other update tool (or wait for it to finish), then run"
@@ -4726,29 +4722,29 @@ RUN_UPDATE() {
         return 0
     fi
 
-    log "RUN_UPDATE: starting pkexec zypper dup..."
+    log "RUN_UPDATE: starting pkexec dnf upgrade..."
     # Run the update, capturing stderr so we can detect a lock even if it
     # appears after our pre-check.
     set +e
-    ZYPPER_ERR_FILE=$(mktemp)
-    pkexec zypper dup 2> >(tee "$ZYPPER_ERR_FILE" | sed -E '/System management is locked/d;/Close this application before trying again/d' >&2)
+    DNF_ERR_FILE=$(mktemp)
+    pkexec dnf upgrade -y 2> >(tee "$DNF_ERR_FILE" | sed -E '/System management is locked/d;/Close this application before trying again/d' >&2)
     rc=$?
     set -e
 
-    if [ "$rc" -ne 0 ] && grep -q "System management is locked" "$ZYPPER_ERR_FILE" 2>/dev/null; then
+    if [ "$rc" -ne 0 ] && grep -q "System management is locked" "$DNF_ERR_FILE" 2>/dev/null; then
         LOCKED_DURING_UPDATE=1
     fi
-    rm -f "$ZYPPER_ERR_FILE"
+    rm -f "$DNF_ERR_FILE"
 
     if [ "$rc" -eq 0 ]; then
         UPDATE_SUCCESS=true
-        log "RUN_UPDATE: pkexec zypper dup completed successfully (rc=$rc)"
+        log "RUN_UPDATE: pkexec dnf upgrade completed successfully (rc=$rc)"
     else
         UPDATE_SUCCESS=false
         if [ "$LOCKED_DURING_UPDATE" -eq 1 ]; then
-            log "RUN_UPDATE: pkexec zypper dup failed due to existing zypper lock (rc=$rc)"
+            log "RUN_UPDATE: pkexec dnf upgrade failed due to existing lock (rc=$rc)"
         else
-            log "RUN_UPDATE: pkexec zypper dup FAILED (rc=$rc)"
+            log "RUN_UPDATE: pkexec dnf upgrade FAILED (rc=$rc)"
         fi
     fi
     
@@ -4759,7 +4755,7 @@ RUN_UPDATE() {
     echo ""
     
     # Post-update integrations (Flatpak, Snap, Soar, Homebrew) are controlled
-    # by flags in /etc/zypper-auto.conf.
+    # by flags in /etc/dnf-auto.conf.
     echo "=========================================="
     echo "  Flatpak Updates"
     echo "=========================================="
@@ -4774,10 +4770,10 @@ RUN_UPDATE() {
             fi
         else
             echo "⚠️  Flatpak is not installed - skipping Flatpak updates."
-            echo "   To install: sudo zypper install flatpak"
+            echo "   To install: sudo dnf install flatpak"
         fi
     else
-        echo "ℹ️  Flatpak updates are disabled in /etc/zypper-auto.conf (ENABLE_FLATPAK_UPDATES=false)."
+        echo "ℹ️  Flatpak updates are disabled in /etc/dnf-auto.conf (ENABLE_FLATPAK_UPDATES=false)."
     fi
 
     echo ""
@@ -4795,11 +4791,11 @@ RUN_UPDATE() {
             fi
         else
             echo "⚠️  Snapd is not installed - skipping Snap updates."
-            echo "   To install: sudo zypper install snapd"
+            echo "   To install: sudo dnf install snapd"
             echo "   Then enable: sudo systemctl enable --now snapd"
         fi
     else
-        echo "ℹ️  Snap updates are disabled in /etc/zypper-auto.conf (ENABLE_SNAP_UPDATES=false)."
+        echo "ℹ️  Snap updates are disabled in /etc/dnf-auto.conf (ENABLE_SNAP_UPDATES=false)."
     fi
 
     echo ""
@@ -4822,7 +4818,7 @@ RUN_UPDATE() {
     fi
 
     if [[ "${ENABLE_SOAR_UPDATES,,}" != "true" ]]; then
-        echo "ℹ️  Soar updates are disabled in /etc/zypper-auto.conf (ENABLE_SOAR_UPDATES=false)."
+        echo "ℹ️  Soar updates are disabled in /etc/dnf-auto.conf (ENABLE_SOAR_UPDATES=false)."
     elif [ -n "$SOAR_BIN" ]; then
         # First, check if a newer *stable* Soar release exists on GitHub.
         # We compare the local "soar --version" against
@@ -4861,8 +4857,8 @@ RUN_UPDATE() {
         else
             echo "⚠️  curl is not installed; skipping automatic Soar update from GitHub."
             echo "    You can update Soar manually from: https://github.com/pkgforge/soar/releases"
-            if [ -x /usr/local/bin/zypper-auto-helper ]; then
-                echo "    Or via helper: zypper-auto-helper --soar"
+            if [ -x /usr/local/bin/dnf-auto-helper ]; then
+                echo "    Or via helper: dnf-auto-helper --soar"
             fi
         fi
 
@@ -4902,8 +4898,8 @@ RUN_UPDATE() {
             else
                 echo "Skipping Soar installation. You can install it later from:"
                 echo "    https://github.com/pkgforge/soar/releases"
-                if [ -x /usr/local/bin/zypper-auto-helper ]; then
-                    echo "    Or via helper: zypper-auto-helper --soar"
+            if [ -x /usr/local/bin/dnf-auto-helper ]; then
+                    echo "    Or via helper: dnf-auto-helper --soar"
                 fi
             fi
         else
@@ -4923,7 +4919,7 @@ RUN_UPDATE() {
     echo ""
 
     if [[ "${ENABLE_BREW_UPDATES,,}" != "true" ]]; then
-        echo "ℹ️  Homebrew updates are disabled in /etc/zypper-auto.conf (ENABLE_BREW_UPDATES=false)."
+        echo "ℹ️  Homebrew updates are disabled in /etc/dnf-auto.conf (ENABLE_BREW_UPDATES=false)."
         echo "    You can still run 'brew update' / 'brew upgrade' manually."
         echo ""
         return
@@ -4959,8 +4955,8 @@ RUN_UPDATE() {
         fi
     else
         echo "ℹ️  Homebrew (brew) is not installed - skipping brew update/upgrade."
-        if [ -x /usr/local/bin/zypper-auto-helper ]; then
-            echo "    To install via helper: zypper-auto-helper --brew"
+        if [ -x /usr/local/bin/dnf-auto-helper ]; then
+            echo "    To install via helper: dnf-auto-helper --brew"
         fi
     fi
 
@@ -4971,7 +4967,7 @@ RUN_UPDATE() {
     echo ""
 
     if [[ "${ENABLE_PIPX_UPDATES,,}" != "true" ]]; then
-        echo "ℹ️  pipx updates are disabled in /etc/zypper-auto.conf (ENABLE_PIPX_UPDATES=false)."
+        echo "ℹ️  pipx updates are disabled in /etc/dnf-auto.conf (ENABLE_PIPX_UPDATES=false)."
         echo "    You can still manage Python CLI tools manually with pipx."
         echo ""
     else
@@ -4984,7 +4980,7 @@ RUN_UPDATE() {
             fi
         else
             echo "ℹ️  pipx is not installed - skipping Python CLI (pipx) updates."
-            echo "    Recommended: zypper-auto-helper --pip-package (run without sudo)"
+            echo "    Recommended: dnf-auto-helper --pip-package (run without sudo)"
         fi
     fi
 
@@ -4992,12 +4988,17 @@ RUN_UPDATE() {
     echo "Checking which services need to be restarted..."
     echo ""
     
-    # Run zypper ps -s and capture output (even if dup had errors)
-    ZYPPER_PS_OUTPUT=$(pkexec zypper ps -s 2>/dev/null || true)
-    echo "$ZYPPER_PS_OUTPUT"
+    # On Fedora, prefer 'needs-restarting' to show services/processes using old libraries.
+    if command -v needs-restarting >/dev/null 2>&1; then
+        NEEDS_OUTPUT=$(sudo needs-restarting 2>/dev/null || true)
+        echo "$NEEDS_OUTPUT"
+    else
+        NEEDS_OUTPUT=""
+        echo "'needs-restarting' not found. Install 'dnf-plugins-core' for detailed restart info."
+    fi
     
     # Check if there are any running processes in the output
-    if echo "$ZYPPER_PS_OUTPUT" | grep -q "running processes"; then
+    if [ -n "$NEEDS_OUTPUT" ]; then
         echo ""
         echo "ℹ️  Services listed above are using old library versions."
         echo ""
@@ -5016,9 +5017,9 @@ RUN_UPDATE() {
 
     if [ "$UPDATE_SUCCESS" = false ]; then
         if [ "$LOCKED_DURING_UPDATE" -eq 1 ]; then
-            echo "⚠  Zypper could not run because system management is locked by another tool. No system packages were changed."
+            echo "⚠  dnf could not run because system management is locked by another tool. No system packages were changed."
         else
-            echo "⚠️  Zypper dup reported errors (see above), but Flatpak/Snap updates were attempted."
+            echo "⚠️  dnf upgrade reported errors (see above), but Flatpak/Snap updates were attempted."
         fi
         echo ""
     fi
@@ -5059,7 +5060,7 @@ for term in "${TERMINALS[@]}"; do
         case "$term" in
             konsole)
                 set +e
-                konsole -e bash -lc '"$HOME"/.local/bin/zypper-run-install --inner'
+                konsole -e bash -lc '"$HOME"/.local/bin/dnf-run-install --inner'
                 rc=$?
                 set -e
                 log "konsole finished with exit code $rc"
@@ -5067,7 +5068,7 @@ for term in "${TERMINALS[@]}"; do
                 ;;
             gnome-terminal)
                 set +e
-                gnome-terminal -- bash -lc '"$HOME"/.local/bin/zypper-run-install --inner'
+                gnome-terminal -- bash -lc '"$HOME"/.local/bin/dnf-run-install --inner'
                 rc=$?
                 set -e
                 log "gnome-terminal finished with exit code $rc"
@@ -5075,7 +5076,7 @@ for term in "${TERMINALS[@]}"; do
                 ;;
             kitty|alacritty|xterm)
                 set +e
-                "$term" -e bash -lc '"$HOME"/.local/bin/zypper-run-install --inner'
+                "$term" -e bash -lc '"$HOME"/.local/bin/dnf-run-install --inner'
                 rc=$?
                 set -e
                 log "${term} finished with exit code $rc"
@@ -5103,7 +5104,7 @@ cat << 'EOF' > "${VIEW_CHANGES_SCRIPT_PATH}"
 
 # Script to view detailed package changes
 # Logging for debugging
-LOG_FILE="$HOME/.local/share/zypper-notify/view-changes.log"
+LOG_FILE="$HOME/.local/share/dnf-notify/view-changes.log"
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] View changes script started" >> "$LOG_FILE"
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] DISPLAY=$DISPLAY" >> "$LOG_FILE"
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] USER=$USER" >> "$LOG_FILE"
@@ -5127,7 +5128,7 @@ if [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
 fi
 
 # Create a temporary script file for the terminal to execute
-TMP_SCRIPT=$(mktemp /tmp/zypper-view-changes.XXXXXX.sh)
+TMP_SCRIPT=$(mktemp /tmp/dnf-view-changes.XXXXXX.sh)
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Created temp script: $TMP_SCRIPT" >> "$LOG_FILE"
 
 cat > "$TMP_SCRIPT" << 'INNEREOF'
@@ -5140,13 +5141,13 @@ echo ""
 echo "Fetching update information..."
 echo ""
 
-# Run zypper with details
-if pkexec zypper --non-interactive dup --dry-run --details; then
+# Run dnf with details (preview only)
+if pkexec dnf upgrade --assumeno --refresh; then
     echo ""
     echo "=========================================="
     echo ""
     echo "This is a preview of what will be updated."
-    echo "Click 'Install Now' in the notification to proceed."
+echo "Click 'Install Now' in the notification to proceed with dnf upgrade."
     echo ""
 else
     echo "⚠️  Could not fetch update details."
@@ -5202,7 +5203,7 @@ chmod +x "${VIEW_CHANGES_SCRIPT_PATH}"
 log_success "View changes helper script created and made executable"
 
 # --- 11c. Create Soar Install Helper (user) ---
-SOAR_INSTALL_HELPER_PATH="$USER_BIN_DIR/zypper-soar-install-helper"
+SOAR_INSTALL_HELPER_PATH="$USER_BIN_DIR/dnf-soar-install-helper"
 log_info ">>> Creating (user) Soar install helper: ${SOAR_INSTALL_HELPER_PATH}"
 update_status "Creating Soar install helper script..."
 log_debug "Writing Soar helper script to: ${SOAR_INSTALL_HELPER_PATH}"
@@ -5247,7 +5248,7 @@ if not os.environ.get("PATH"):
     os.environ["PATH"] = "/usr/local/bin:/usr/bin:/bin"
 
 
-LOG_PATH = os.path.expanduser("~/.local/share/zypper-notify/soar-install-helper.log")
+LOG_PATH = os.path.expanduser("~/.local/share/dnf-notify/soar-install-helper.log")
 loop = None  # type: ignore[assignment]
 
 
@@ -5265,10 +5266,10 @@ def _log(message: str) -> None:
 
 def _open_terminal_with_soar_install() -> None:
     # Use the main helper CLI so behavior is consistent with running
-    #   sudo zypper-auto-helper --soar
+    #   sudo dnf-auto-helper --soar
     # from a regular terminal.
     cmd = (
-        "sudo zypper-auto-helper --soar; "
+        "sudo dnf-auto-helper --soar; "
         "echo; echo 'Press Enter to close this window...'; read -r"
     )
     terminals = ["konsole", "gnome-terminal", "kitty", "alacritty", "xterm"]
@@ -5334,14 +5335,14 @@ def main() -> None:
         _log(f"Initial env DISPLAY={os.environ.get('DISPLAY')} WAYLAND_DISPLAY={os.environ.get('WAYLAND_DISPLAY')} DBUS_SESSION_BUS_ADDRESS={os.environ.get('DBUS_SESSION_BUS_ADDRESS')}")
         _log(f"Initial PATH={os.environ.get('PATH')}")
 
-        Notify.init("zypper-auto-helper")
+        Notify.init("dnf-auto-helper")
         body = (
             "Soar (optional CLI helper) is not installed.\n\n"
             "Click 'Install Soar' to open a terminal and run the official "
             "install script, or dismiss this notification to skip."
         )
         n = Notify.Notification.new(
-            "Zypper Auto-Helper: Install Soar",
+            "DNF Auto-Helper: Install Soar",
             body,
             "dialog-information",
         )
@@ -5373,10 +5374,10 @@ chmod +x "${SOAR_INSTALL_HELPER_PATH}"
 log_success "Soar install helper script created and made executable"
 
 # --- 11d. Install script itself as a command ---
-log_info ">>> Installing zypper-auto-helper command..."
+log_info ">>> Installing dnf-auto-helper command..."
 update_status "Installing command-line interface..."
 
-COMMAND_PATH="/usr/local/bin/zypper-auto-helper"
+COMMAND_PATH="/usr/local/bin/dnf-auto-helper"
 INSTALLER_SCRIPT_PATH="$0"
 
 # Get the absolute path of the installer script
@@ -5390,8 +5391,8 @@ log_debug "Command installation path: $COMMAND_PATH"
 # Copy the installer script to /usr/local/bin
 if cp "$INSTALLER_SCRIPT_PATH" "$COMMAND_PATH" >> "${LOG_FILE}" 2>&1; then
     chmod +x "$COMMAND_PATH" >> "${LOG_FILE}" 2>&1
-    log_success "Command installed: zypper-auto-helper"
-    log_info "You can now run: zypper-auto-helper --help"
+    log_success "Command installed: dnf-auto-helper"
+    log_info "You can now run: dnf-auto-helper --help"
 else
     log_error "Warning: Could not install command (non-fatal)"
 fi
@@ -5501,9 +5502,9 @@ if [ ${#MISSING_PACKAGES[@]} -gt 0 ]; then
     MISSING_MSG="The following optional package managers are not installed:\n\n"
     for pkg in "${MISSING_PACKAGES[@]}"; do
         if [ "$pkg" = "flatpak" ]; then
-            MISSING_MSG+="• Flatpak - for Flatpak app updates\n  Install: sudo zypper install flatpak\n\n"
+            MISSING_MSG+="• Flatpak - for Flatpak app updates\n  Install: sudo dnf install flatpak\n\n"
         elif [ "$pkg" = "snapd" ]; then
-            MISSING_MSG+="• Snapd - for Snap package updates\n  Install: sudo zypper install snapd\n  Enable: sudo systemctl enable --now snapd\n\n"
+            MISSING_MSG+="• Snapd - for Snap package updates\n  Install: sudo dnf install snapd\n  Enable: sudo systemctl enable --now snapd\n\n"
         fi
     done
     MISSING_MSG+="These are optional. System updates will work without them."
@@ -5528,7 +5529,7 @@ if [ ${#MISSING_PACKAGES[@]} -gt 0 ]; then
         # this, the helper fell back to DISPLAY=:0 which may not match
         # the user's real display.
         if sudo -u "$SUDO_USER" DISPLAY="$DISPLAY" DBUS_SESSION_BUS_ADDRESS="$USER_BUS_PATH" \
-            "$USER_BIN_DIR/zypper-soar-install-helper" >/dev/null 2>&1 & then
+            "$USER_BIN_DIR/dnf-soar-install-helper" >/dev/null 2>&1 & then
             log_debug "Launched Soar install helper notification for user $SUDO_USER"
         fi
     fi
@@ -5542,12 +5543,12 @@ if [ ${#MISSING_PACKAGES[@]} -gt 0 ]; then
         if [ "$pkg" = "flatpak" ]; then
             echo "Flatpak:" | tee -a "${LOG_FILE}"
             echo "  Purpose: Update Flatpak applications" | tee -a "${LOG_FILE}"
-            echo "  Install: sudo zypper install flatpak" | tee -a "${LOG_FILE}"
+            echo "  Install: sudo dnf install flatpak"
             echo "" | tee -a "${LOG_FILE}"
         elif [ "$pkg" = "snapd" ]; then
             echo "Snapd:" | tee -a "${LOG_FILE}"
             echo "  Purpose: Update Snap packages" | tee -a "${LOG_FILE}"
-            echo "  Install: sudo zypper install snapd" | tee -a "${LOG_FILE}"
+            echo "  Install: sudo dnf install snapd"
             echo "  Enable:  sudo systemctl enable --now snapd" | tee -a "${LOG_FILE}"
             echo "" | tee -a "${LOG_FILE}"
         elif [ "$pkg" = "soar" ]; then
@@ -5559,8 +5560,8 @@ if [ ${#MISSING_PACKAGES[@]} -gt 0 ]; then
         elif [ "$pkg" = "pipx" ]; then
             echo "pipx:" | tee -a "${LOG_FILE}"
             echo "  Purpose: Manage standalone Python CLI tools (yt-dlp, black, ansible, httpie, etc.)" | tee -a "${LOG_FILE}"
-            echo "  Install: sudo zypper install python313-pipx" | tee -a "${LOG_FILE}"
-            echo "  Helper:  zypper-auto-helper --pip-package  (run without sudo)" | tee -a "${LOG_FILE}"
+            echo "  Install: sudo dnf install pipx"
+            echo "  Helper:  dnf-auto-helper --pip-package  (run without sudo)"
             echo "" | tee -a "${LOG_FILE}"
         fi
     done
@@ -5576,7 +5577,7 @@ update_status "SUCCESS: Installation completed"
 echo "" | tee -a "${LOG_FILE}"
 echo "==============================================" | tee -a "${LOG_FILE}"
 echo "Installation Summary:" | tee -a "${LOG_FILE}"
-echo "  - Command: zypper-auto-helper (installed to /usr/local/bin)" | tee -a "${LOG_FILE}"
+echo "  - Command: dnf-auto-helper (installed to /usr/local/bin)"
 echo "  - System service: ${DL_SERVICE_NAME}.timer (enabled)" | tee -a "${LOG_FILE}"
 echo "  - User service: ${NT_SERVICE_NAME}.timer (enabled)" | tee -a "${LOG_FILE}"
 echo "  - Install logs: ${LOG_DIR}/install-*.log" | tee -a "${LOG_FILE}"
@@ -5585,8 +5586,8 @@ echo "  - User logs: ${USER_LOG_DIR}/" | tee -a "${LOG_FILE}"
 echo "  - Status file: ${STATUS_FILE}" | tee -a "${LOG_FILE}"
 echo "" | tee -a "${LOG_FILE}"
 echo "Quick Commands:" | tee -a "${LOG_FILE}"
-echo "  sudo zypper-auto-helper --verify        # Check system health" | tee -a "${LOG_FILE}"
-echo "  sudo zypper-auto-helper --help          # Show help" | tee -a "${LOG_FILE}"
+echo "  sudo dnf-auto-helper --verify        # Check system health"
+echo "  sudo dnf-auto-helper --help          # Show help"
 echo "  cat ${STATUS_FILE}                      # View current status" | tee -a "${LOG_FILE}"
 echo "" | tee -a "${LOG_FILE}"
 echo "Service Status:" | tee -a "${LOG_FILE}"
