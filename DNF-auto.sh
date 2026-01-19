@@ -1168,10 +1168,8 @@ echo "The installer script (DNF-auto.sh) and your Soar/Homebrew installs" | tee 
         echo "  - System services/timers: dnf-autodownload.service, dnf-autodownload.timer" | tee -a "${LOG_FILE}"
         echo "    dnf-cache-cleanup.service, dnf-cache-cleanup.timer" | tee -a "${LOG_FILE}"
         echo "    dnf-auto-verify.service, dnf-auto-verify.timer" | tee -a "${LOG_FILE}"
-        echo "    (plus any legacy zypper-* units if present)" | tee -a "${LOG_FILE}"
 echo "  - Root binaries: /usr/local/bin/dnf-download-with-progress, /usr/local/bin/dnf-auto-helper" | tee -a "${LOG_FILE}"
         echo "  - User units: $SUDO_USER_HOME/.config/systemd/user/dnf-notify-user.service/timer" | tee -a "${LOG_FILE}"
-        echo "    (plus any legacy zypper-notify-user.* units)" | tee -a "${LOG_FILE}"
 echo "  - Helper scripts: $SUDO_USER_HOME/.local/bin/dnf-notify-updater.py, dnf-run-install," | tee -a "${LOG_FILE}"
 echo "    dnf-with-ps, dnf-view-changes, dnf-soar-install-helper" | tee -a "${LOG_FILE}"
         if [ "${UNINSTALL_KEEP_LOGS:-0}" -eq 1 ]; then
@@ -1201,39 +1199,27 @@ update_status "Uninstalling dnf-auto-helper components..."
 
     # 1. Stop and disable root timers/services
     log_debug "Disabling root timers and services..."
-    # New DNF-based units
+    # DNF-based units
     systemctl disable --now dnf-autodownload.timer >> "${LOG_FILE}" 2>&1 || true
     systemctl disable --now dnf-cache-cleanup.timer >> "${LOG_FILE}" 2>&1 || true
     systemctl disable --now dnf-auto-verify.timer >> "${LOG_FILE}" 2>&1 || true
     systemctl stop dnf-autodownload.service >> "${LOG_FILE}" 2>&1 || true
     systemctl stop dnf-cache-cleanup.service >> "${LOG_FILE}" 2>&1 || true
     systemctl stop dnf-auto-verify.service >> "${LOG_FILE}" 2>&1 || true
-    # Legacy zypper-auto-helper units (for cleanup on upgraded systems)
-    systemctl disable --now zypper-autodownload.timer >> "${LOG_FILE}" 2>&1 || true
-    systemctl disable --now zypper-cache-cleanup.timer >> "${LOG_FILE}" 2>&1 || true
-    systemctl disable --now zypper-auto-verify.timer >> "${LOG_FILE}" 2>&1 || true
-    systemctl stop zypper-autodownload.service >> "${LOG_FILE}" 2>&1 || true
-    systemctl stop zypper-cache-cleanup.service >> "${LOG_FILE}" 2>&1 || true
-    systemctl stop zypper-auto-verify.service >> "${LOG_FILE}" 2>&1 || true
 
     # 2. Stop and disable user timer/service
     if [ -n "${SUDO_USER:-}" ]; then
         log_debug "Disabling user timer and service for $SUDO_USER..."
-        # New DNF-based user units
+        # DNF-based user units
         sudo -u "$SUDO_USER" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u "$SUDO_USER")/bus" \
             systemctl --user disable --now dnf-notify-user.timer >> "${LOG_FILE}" 2>&1 || true
         sudo -u "$SUDO_USER" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u "$SUDO_USER")/bus" \
             systemctl --user stop dnf-notify-user.service >> "${LOG_FILE}" 2>&1 || true
-        # Legacy zypper-based units
-        sudo -u "$SUDO_USER" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u "$SUDO_USER")/bus" \
-            systemctl --user disable --now zypper-notify-user.timer >> "${LOG_FILE}" 2>&1 || true
-        sudo -u "$SUDO_USER" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u "$SUDO_USER")/bus" \
-            systemctl --user stop zypper-notify-user.service >> "${LOG_FILE}" 2>&1 || true
     fi
 
     # 3. Remove systemd unit files and root binaries
     log_debug "Removing root systemd units and binaries..."
-    # New DNF-based units
+    # DNF-based units
     rm -f /etc/systemd/system/dnf-autodownload.service >> "${LOG_FILE}" 2>&1 || true
     rm -f /etc/systemd/system/dnf-autodownload.timer >> "${LOG_FILE}" 2>&1 || true
     rm -f /etc/systemd/system/dnf-cache-cleanup.service >> "${LOG_FILE}" 2>&1 || true
@@ -1242,19 +1228,11 @@ update_status "Uninstalling dnf-auto-helper components..."
     rm -f /etc/systemd/system/dnf-auto-verify.timer >> "${LOG_FILE}" 2>&1 || true
     rm -f /usr/local/bin/dnf-download-with-progress >> "${LOG_FILE}" 2>&1 || true
     rm -f /usr/local/bin/dnf-auto-helper >> "${LOG_FILE}" 2>&1 || true
-    # Legacy zypper-based units and binaries
-    rm -f /etc/systemd/system/zypper-autodownload.service >> "${LOG_FILE}" 2>&1 || true
-    rm -f /etc/systemd/system/zypper-autodownload.timer >> "${LOG_FILE}" 2>&1 || true
-    rm -f /etc/systemd/system/zypper-cache-cleanup.service >> "${LOG_FILE}" 2>&1 || true
-    rm -f /etc/systemd/system/zypper-cache-cleanup.timer >> "${LOG_FILE}" 2>&1 || true
-    rm -f /etc/systemd/system/zypper-auto-verify.service >> "${LOG_FILE}" 2>&1 || true
-    rm -f /etc/systemd/system/zypper-auto-verify.timer >> "${LOG_FILE}" 2>&1 || true
-    rm -f /usr/local/bin/zypper-download-with-progress >> "${LOG_FILE}" 2>&1 || true
 
     # 4. Remove user-level scripts and systemd units
     if [ -n "${SUDO_USER_HOME:-}" ]; then
         log_debug "Removing user scripts and units under $SUDO_USER_HOME..."
-        # New DNF-based user units and helpers
+        # DNF-based user units and helpers
         rm -f "$SUDO_USER_HOME/.config/systemd/user/dnf-notify-user.service" >> "${LOG_FILE}" 2>&1 || true
         rm -f "$SUDO_USER_HOME/.config/systemd/user/dnf-notify-user.timer" >> "${LOG_FILE}" 2>&1 || true
         rm -f "$SUDO_USER_HOME/.local/bin/dnf-notify-updater.py" >> "${LOG_FILE}" 2>&1 || true
@@ -1262,21 +1240,8 @@ update_status "Uninstalling dnf-auto-helper components..."
         rm -f "$SUDO_USER_HOME/.local/bin/dnf-with-ps" >> "${LOG_FILE}" 2>&1 || true
         rm -f "$SUDO_USER_HOME/.local/bin/dnf-view-changes" >> "${LOG_FILE}" 2>&1 || true
         rm -f "$SUDO_USER_HOME/.local/bin/dnf-soar-install-helper" >> "${LOG_FILE}" 2>&1 || true
-        # Legacy zypper-based units and helpers
-        rm -f "$SUDO_USER_HOME/.config/systemd/user/zypper-notify-user.service" >> "${LOG_FILE}" 2>&1 || true
-        rm -f "$SUDO_USER_HOME/.config/systemd/user/zypper-notify-user.timer" >> "${LOG_FILE}" 2>&1 || true
-        rm -f "$SUDO_USER_HOME/.local/bin/zypper-run-install" >> "${LOG_FILE}" 2>&1 || true
-        rm -f "$SUDO_USER_HOME/.local/bin/zypper-with-ps" >> "${LOG_FILE}" 2>&1 || true
-        rm -f "$SUDO_USER_HOME/.local/bin/zypper-view-changes" >> "${LOG_FILE}" 2>&1 || true
-        rm -f "$SUDO_USER_HOME/.local/bin/zypper-soar-install-helper" >> "${LOG_FILE}" 2>&1 || true
-        rm -f "$SUDO_USER_HOME/.config/fish/conf.d/zypper-wrapper.fish" >> "${LOG_FILE}" 2>&1 || true
-        rm -f "$SUDO_USER_HOME/.config/fish/conf.d/zypper-auto-helper-alias.fish" >> "${LOG_FILE}" 2>&1 || true
 
         # Remove bash/zsh aliases we added (non-fatal if missing)
-        sed -i '/# Zypper wrapper for auto service check/d' "$SUDO_USER_HOME/.bashrc" 2>>"${LOG_FILE}" || true
-        sed -i '/alias zypper=/d' "$SUDO_USER_HOME/.bashrc" 2>>"${LOG_FILE}" || true
-        sed -i '/# Zypper wrapper for auto service check/d' "$SUDO_USER_HOME/.zshrc" 2>>"${LOG_FILE}" || true
-        sed -i '/alias zypper=/d' "$SUDO_USER_HOME/.zshrc" 2>>"${LOG_FILE}" || true
         # Also remove newer DNF wrapper aliases if present
         sed -i '/# DNF wrapper for auto service check/d' "$SUDO_USER_HOME/.bashrc" 2>>"${LOG_FILE}" || true
         sed -i "/alias dnf='$DNF_WRAPPER_PATH'/d" "$SUDO_USER_HOME/.bashrc" 2>>"${LOG_FILE}" || true
@@ -1321,10 +1286,9 @@ rm -rf "$SUDO_USER_HOME/.cache/dnf-notify" >> "${LOG_FILE}" 2>&1 || true
     #    `systemctl --user status` looks clean after uninstall.
     log_debug "Resetting failed state for removed systemd units (if any)..."
     systemctl reset-failed dnf-autodownload.service dnf-cache-cleanup.service dnf-auto-verify.service >> "${LOG_FILE}" 2>&1 || true
-    systemctl reset-failed zypper-autodownload.service zypper-cache-cleanup.service zypper-auto-verify.service >> "${LOG_FILE}" 2>&1 || true
     if [ -n "${SUDO_USER:-}" ]; then
         sudo -u "$SUDO_USER" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u "$SUDO_USER")/bus" \
-            systemctl --user reset-failed dnf-notify-user.service zypper-notify-user.service >> "${LOG_FILE}" 2>&1 || true
+            systemctl --user reset-failed dnf-notify-user.service >> "${LOG_FILE}" 2>&1 || true
     fi
 
 log_success "Core dnf-auto-helper components uninstalled (installer script left in place)."
@@ -1332,7 +1296,7 @@ update_status "SUCCESS: dnf-auto-helper core components uninstalled"
 
     echo "" | tee -a "${LOG_FILE}"
     echo "Uninstall summary:" | tee -a "${LOG_FILE}"
-    echo "  - System services and timers removed: dnf-autodownload, dnf-cache-cleanup, dnf-auto-verify (and any legacy zypper-* equivalents)" | tee -a "${LOG_FILE}"
+    echo "  - System services and timers removed: dnf-autodownload, dnf-cache-cleanup, dnf-auto-verify" | tee -a "${LOG_FILE}"
     echo "  - User notifier units and helper scripts removed for user $SUDO_USER" | tee -a "${LOG_FILE}"
     echo "  - No changes made to snapd, Flatpak, Soar, Homebrew or /etc/dnf/dnf.conf" | tee -a "${LOG_FILE}"
     if [ "${UNINSTALL_KEEP_LOGS:-0}" -eq 1 ]; then
@@ -1583,10 +1547,8 @@ if [[ "${1:-}" == "--help" || "${1:-}" == "-h" || "${1:-}" == "help" \
     echo "  --soar            Install/upgrade optional Soar CLI helper for the user"
     echo "  --brew            Install/upgrade Homebrew (brew) for the user"
     echo "  --pip-package     Install/upgrade pipx and show how to manage Python CLI tools with pipx"
-    echo "  --uninstall-zypper-helper  Remove legacy zypper-auto-helper services, timers, logs, and user scripts"
-    echo "                       (alias: --uninstall-zypper)"
-    echo "  --reset-config    Reset /etc/dnf-auto.conf to documented defaults (with backup)"
-    echo "  --help            Show this help message"
+     echo "  --reset-config    Reset /etc/dnf-auto.conf to documented defaults (with backup)"
+     echo "  --help            Show this help message"
     echo ""
     echo "Examples:"
     echo "  dnf-auto-helper install         # Full installation (via shell alias, runs with sudo)"
@@ -1630,36 +1592,6 @@ elif [[ "${1:-}" == "--pip-package" || "${1:-}" == "--pipx" ]]; then
 elif [[ "${1:-}" == "--reset-config" ]]; then
     log_info "Config reset mode requested"
     run_reset_config_only
-    exit $?
-elif [[ "${1:-}" == "--uninstall-zypper-helper" || "${1:-}" == "--uninstall-zypper" ]]; then
-    shift
-    # Parse optional flags for the uninstaller:
-    #   --yes / -y / --non-interactive : skip confirmation prompt
-    #   --dry-run                      : show what would be removed, no changes
-    #   --keep-logs                    : do not delete any log files under $LOG_DIR
-    UNINSTALL_ASSUME_YES=0
-    UNINSTALL_DRY_RUN=0
-    UNINSTALL_KEEP_LOGS=0
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --yes|-y|--non-interactive)
-                UNINSTALL_ASSUME_YES=1
-                ;;
-            --dry-run)
-                UNINSTALL_DRY_RUN=1
-                ;;
-            --keep-logs)
-                UNINSTALL_KEEP_LOGS=1
-                ;;
-            *)
-                log_error "Unknown option for --uninstall-zypper-helper: $1"
-                exit 1
-                ;;
-        esac
-        shift
-    done
-    log_info "Uninstall zypper-auto-helper mode requested"
-    run_uninstall_helper_only
     exit $?
 fi
 
@@ -1812,49 +1744,6 @@ systemctl disable --now packagekit.service packagekit-offline-update.service pac
     >> "${LOG_FILE}" 2>&1 || true
 log_success "PackageKit background services disabled (or not present)"
 
-# --- 4. Clean Up ALL Previous Versions (System & User) ---
-log_info ">>> Cleaning up all old system-wide services..."
-update_status "Removing old system services..."
-log_debug "Disabling old timers and services..."
-# Legacy zypper-auto-helper units only; new DNF units are managed elsewhere
-systemctl disable --now zypper-autodownload.timer >> "${LOG_FILE}" 2>&1 || true
-systemctl stop zypper-autodownload.service >> "${LOG_FILE}" 2>&1 || true
-systemctl disable --now zypper-notify.timer >> "${LOG_FILE}" 2>&1 || true
-systemctl stop zypper-notify.service >> "${LOG_FILE}" 2>&1 || true
-systemctl disable --now zypper-smart-updater.timer >> "${LOG_FILE}" 2>&1 || true
-systemctl stop zypper-smart-updater.service >> "${LOG_FILE}" 2>&1 || true
-
-log_debug "Removing old system binaries..."
-rm -f /usr/local/bin/zypper-run-install* >> "${LOG_FILE}" 2>&1
-rm -f /usr/local/bin/notify-updater >> "${LOG_FILE}" 2>&1
-rm -f /usr/local/bin/zypper-smart-updater-script >> "${LOG_FILE}" 2>&1
-log_success "Old system services disabled and files removed"
-
-log_info ">>> Cleaning up old user-space services..."
-update_status "Removing old user services..."
-SUDO_USER_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)
-log_debug "Disabling user timer..."
-sudo -u "$SUDO_USER" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$SUDO_USER/bus" systemctl --user disable --now zypper-notify-user.timer >> "${LOG_FILE}" 2>&1 || true
-
-# Force kill any running Python notifier processes
-log_debug "Force-killing any running Python notifier processes..."
-pkill -9 -f "zypper-notify-updater.py" >> "${LOG_FILE}" 2>&1 || true
-pkill -9 -f "dnf-notify-updater.py" >> "${LOG_FILE}" 2>&1 || true
-sleep 1
-
-# Clear Python bytecode cache
-log_debug "Clearing Python bytecode cache..."
-find "$SUDO_USER_HOME/.local/bin" -name "*.pyc" -delete >> "${LOG_FILE}" 2>&1 || true
-find "$SUDO_USER_HOME/.local/bin" -type d -name "__pycache__" -exec rm -rf {} + >> "${LOG_FILE}" 2>&1 || true
-
-log_debug "Removing old user binaries and configs..."
-rm -f "$SUDO_USER_HOME/.local/bin/zypper-run-install*" >> "${LOG_FILE}" 2>&1
-rm -f "$SUDO_USER_HOME/.local/bin/zypper-open-terminal*" >> "${LOG_FILE}" 2>&1
-rm -f "$SUDO_USER_HOME/.local/bin/zypper-notify-updater" >> "${LOG_FILE}" 2>&1
-rm -f "$SUDO_USER_HOME/.local/bin/zypper-notify-updater.py" >> "${LOG_FILE}" 2>&1
-rm -f "$SUDO_USER_HOME/.config/systemd/user/zypper-notify-user."* >> "${LOG_FILE}" 2>&1
-log_success "Old user services disabled and files removed"
-
 # --- 5. Create/Update DOWNLOADER (Root Service) ---
 log_info ">>> Creating (root) downloader service: ${DL_SERVICE_FILE}"
 update_status "Creating system downloader service..."
@@ -1983,7 +1872,7 @@ handle_lock_or_fail() {
 echo "refreshing" > "$STATUS_FILE"
 date +%s > "$START_TIME_FILE"
 
-# Refresh package metadata (equivalent to "zypper refresh")
+# Refresh package metadata (dnf makecache)
 REFRESH_ERR=$(mktemp)
 if ! /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 /usr/bin/dnf -q makecache >/dev/null 2>"$REFRESH_ERR"; then
     # If another package manager instance holds the lock, handle_lock_or_fail will
@@ -2516,7 +2405,7 @@ if [[ "$*" == *"dup"* ]] || [[ "$*" == *"dist-upgrade"* ]] || [[ "$*" == *"updat
         echo ""
     fi
 
-    # Run the actual dnf command (map common zypper update invocations to dnf upgrade)
+    # Run the actual dnf command (also handle dup/dist-upgrade as upgrade)
     if [[ "$*" == *"dup"* ]] || [[ "$*" == *"dist-upgrade"* ]]; then
         sudo /usr/bin/dnf upgrade -y
     else
@@ -2770,8 +2659,6 @@ update_status "Configuring shell aliases..."
 if [ -f "$SUDO_USER_HOME/.bashrc" ]; then
     log_debug "Adding dnf alias to .bashrc"
     # Remove old aliases if they exist
-    sed -i '/# Zypper wrapper for auto service check/d' "$SUDO_USER_HOME/.bashrc" || true
-    sed -i '/alias zypper=/d' "$SUDO_USER_HOME/.bashrc" || true
     sed -i '/# DNF wrapper for auto service check/d' "$SUDO_USER_HOME/.bashrc" || true
     sed -i "/alias dnf='$DNF_WRAPPER_PATH'/d" "$SUDO_USER_HOME/.bashrc" || true
     # Add new alias
@@ -2818,8 +2705,6 @@ fi
 if [ -f "$SUDO_USER_HOME/.zshrc" ]; then
     log_debug "Adding dnf alias to .zshrc"
     # Remove old alias if it exists
-    sed -i '/# Zypper wrapper for auto service check/d' "$SUDO_USER_HOME/.zshrc" || true
-    sed -i '/alias zypper=/d' "$SUDO_USER_HOME/.zshrc" || true
     sed -i '/# DNF wrapper for auto service check/d' "$SUDO_USER_HOME/.zshrc" || true
     sed -i "/alias dnf='$DNF_WRAPPER_PATH'/d" "$SUDO_USER_HOME/.zshrc" || true
     # Add new alias
@@ -4390,10 +4275,10 @@ def main():
                             time_str = f"{seconds}s"
                         
                         # Before we show any "Downloads Complete" message, double‑check that
-                        # there are still updates pending. If zypper dup --dry-run reports
-                        # nothing to do, this completion status is stale (the user probably
-                        # installed updates manually) and we should skip the download
-                        # notification entirely so it doesn't appear after everything
+                        # there are still updates pending. If a non-interactive dnf preview
+                        # reports nothing to do, this completion status is stale (the user
+                        # probably installed updates manually) and we should skip the
+                        # download notification entirely so it doesn't appear after everything
                         # is already installed.
                         dry_output = ""
                         pending_count = None
