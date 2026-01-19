@@ -4853,6 +4853,33 @@ RUN_UPDATE() {
     echo "  Running System Update"
     echo "=========================================="
     echo ""
+
+    # Pre-update safety check: warn if common desktop applications that
+    # are sensitive to live library replacement are running (browsers,
+    # office suites, editors, etc.). This reduces the chance of data loss
+    # from crashes during an upgrade.
+    local busy_procs
+    busy_procs="$(pgrep -a -u "$USER" -f 'firefox|chrome|chromium|brave|vivaldi|libreoffice|soffice.bin|code|steam|thunderbird' 2>/dev/null || true)"
+    if [ -n "$busy_procs" ]; then
+        echo "⚠  The following GUI applications are currently running and may crash or lose data if updated while open:"
+        echo ""
+        echo "$busy_procs"
+        echo ""
+        echo "It is strongly recommended to save your work and close these applications before proceeding."
+        echo ""
+        read -rp "Continue with the system update anyway? [y/N]: " REPLY
+        case "$REPLY" in
+            [Yy]*)
+                log "RUN_UPDATE: user chose to continue despite running GUI applications"
+                ;;
+            *)
+                echo "Aborting update so you can close applications safely."
+                log "RUN_UPDATE: aborted by user due to running GUI applications"
+                return 0
+                ;;
+        esac
+        echo ""
+    fi
     
     # Track whether dnf failed specifically because of a lock so we can
     # show a clearer message later.
@@ -4903,12 +4930,15 @@ RUN_UPDATE() {
         return 0
     fi
 
-    log "RUN_UPDATE: starting pkexec dnf upgrade..."
+    log "RUN_UPDATE: starting pkexec dnf upgrade with --refresh --best --skip-broken..."
     # Run the update, capturing stderr so we can detect a lock even if it
-    # appears after our pre-check.
+    # appears after our pre-check. Respect DUP_EXTRA_FLAGS from
+    # /etc/dnf-auto.conf when present so users can further tune solver
+    # behaviour.
     set +e
     DNF_ERR_FILE=$(mktemp)
-    pkexec dnf upgrade -y 2> >(tee "$DNF_ERR_FILE" | sed -E '/System management is locked/d;/Close this application before trying again/d' >&2)
+    pkexec dnf upgrade -y --refresh --best --skip-broken --allowerasing ${DUP_EXTRA_FLAGS:-} \
+        2> >(tee "$DNF_ERR_FILE" | sed -E '/System management is locked/d;/Close this application before trying again/d' >&2)
     rc=$?
     set -e
 
@@ -4934,6 +4964,25 @@ RUN_UPDATE() {
     echo "  Update Complete - Post-Update Check"
     echo "=========================================="
     echo ""
+
+    # If the main system upgrade succeeded, run a follow-up autoremove to
+    # clean up unneeded dependencies. This keeps the system tidy without
+    # the user having to remember to run it manually.
+    if [ "$UPDATE_SUCCESS" = true ]; then
+        echo "Running 'dnf autoremove' to clean up unused dependencies..."
+        log "RUN_UPDATE: running 'dnf autoremove -y' after successful upgrade"
+        set +e
+        pkexec dnf autoremove -y
+        AR_RC=$?
+        set -e
+        if [ "$AR_RC" -eq 0 ]; then
+            echo "✅ dnf autoremove completed."
+        else
+            echo "⚠️  dnf autoremove reported errors (continuing)."
+            log "RUN_UPDATE: dnf autoremove failed (rc=$AR_RC)"
+        fi
+        echo ""
+    fi
     
     # Post-update integrations (Flatpak, Snap, Soar, Homebrew) are controlled
     # by flags in /etc/dnf-auto.conf.
@@ -5194,6 +5243,34 @@ RUN_UPDATE() {
     else
         echo "✅ No services require restart. You're all set!"
         echo ""
+    fi
+
+    # After a successful upgrade, check for configuration drift by scanning
+    # for newly created .rpmnew files under /etc. These indicate that a
+    # package's default config changed and needs to be merged with your
+    # local modifications.
+    if [ "$UPDATE_SUCCESS" = true ]; then
+        echo "=========================================="
+        echo "  Configuration file changes (.rpmnew)"
+        echo "=========================================="
+        echo ""
+        set +e
+        RPMNEW_LIST=$(sudo find /etc -type f -name '*.rpmnew' 2>/dev/null | sort || true)
+        set -e
+        if [ -n "$RPMNEW_LIST" ]; then
+            echo "The following .rpmnew configuration files were found under /etc:"
+            echo ""
+            echo "$RPMNEW_LIST"
+            echo ""
+            echo "For each of these, compare and merge with your current config. For example:"
+            echo "  sudo diff -u /etc/NAME.conf /etc/NAME.conf.rpmnew"
+            echo "  sudo $EDITOR /etc/NAME.conf /etc/NAME.conf.rpmnew"
+            echo ""
+            log "RUN_UPDATE: detected .rpmnew files after upgrade: $(printf '%s' "$RPMNEW_LIST" | tr '\n' ' ')"
+        else
+            echo "No .rpmnew configuration files detected under /etc."
+            echo ""
+        fi
     fi
 
     if [ "$UPDATE_SUCCESS" = false ]; then
