@@ -2066,18 +2066,35 @@ if ! /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 /usr/bin/dnf -q upgrade --assu
 
     # Re-check whether the preview still failed after optional repair.
     if [ -s "$DRY_ERR" ]; then
-        # Non-lock failure at the preview stage – classify it so the
-        # notifier can display a meaningful error notification.
-        if grep -qi "could not resolve host" "$DRY_ERR" || \
-           grep -qi "Failed to synchronize cache" "$DRY_ERR"; then
-            echo "error:network" > "$STATUS_FILE"
+        # Final fallback: run a more tolerant preview that allows erasing
+        # and skips broken/unavailable packages so we can still pre-download
+        # everything that is safe, without the user having to configure
+        # anything.
+        DRY_ERR_FALLBACK=$(mktemp)
+        if /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 \
+            /usr/bin/dnf -q upgrade --assumeno --skip-broken --allowerasing $DUP_EXTRA_FLAGS \
+            > "$DRY_OUTPUT" 2>"$DRY_ERR_FALLBACK"; then
+            # Tolerant preview succeeded; discard previous errors and
+            # continue as if the original preview had worked.
+            rm -f "$DRY_ERR" "$DRY_ERR_FALLBACK"
         else
-            echo "error:repo" > "$STATUS_FILE"
-        fi
+            # Merge fallback diagnostics into main error log and classify.
+            cat "$DRY_ERR_FALLBACK" >> "$DRY_ERR" 2>/dev/null || true
+            rm -f "$DRY_ERR_FALLBACK"
 
-        cat "$DRY_ERR" >&2 || true
-        rm -f "$DRY_ERR" "$DRY_OUTPUT"
-        exit 0
+            # Non-lock failure at the preview stage – classify it so the
+            # notifier can display a meaningful error notification.
+            if grep -qi "could not resolve host" "$DRY_ERR" || \
+               grep -qi "Failed to synchronize cache" "$DRY_ERR"; then
+                echo "error:network" > "$STATUS_FILE"
+            else
+                echo "error:repo" > "$STATUS_FILE"
+            fi
+
+            cat "$DRY_ERR" >&2 || true
+            rm -f "$DRY_ERR" "$DRY_OUTPUT"
+            exit 0
+        fi
     fi
 fi
 rm -f "$DRY_ERR"
@@ -2150,6 +2167,22 @@ DL_ERR=$(mktemp)
 DNF_RET=$?
 if [ $DNF_RET -ne 0 ]; then
     handle_lock_or_fail "$DL_ERR"
+
+    # Final fallback for downloads as well: if the normal download-only
+    # pass fails for non-lock reasons, try a more tolerant run that allows
+    # erasing and skips broken/unavailable packages so we can still
+    # prefetch as much as possible.
+    DL_ERR_FALLBACK=$(mktemp)
+    /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 \
+        /usr/bin/dnf -q upgrade --downloadonly -y --skip-broken --allowerasing $DUP_EXTRA_FLAGS \
+        >/dev/null 2>"$DL_ERR_FALLBACK"
+    DNF_RET=$?
+    if [ $DNF_RET -eq 0 ]; then
+        rm -f "$DL_ERR" "$DL_ERR_FALLBACK"
+    else
+        cat "$DL_ERR_FALLBACK" >> "$DL_ERR" 2>/dev/null || true
+        rm -f "$DL_ERR_FALLBACK"
+    fi
 fi
 rm -f "$DL_ERR"
 set -e
