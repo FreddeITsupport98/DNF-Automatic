@@ -1789,6 +1789,21 @@ DUP_EXTRA_FLAGS="${DUP_EXTRA_FLAGS:-}"
 CACHE_EXPIRY_MINUTES="${CACHE_EXPIRY_MINUTES:-10}"
 DOWNLOADER_DOWNLOAD_MODE="${DOWNLOADER_DOWNLOAD_MODE:-full}"
 
+# Detect which DNF binary to use (dnf5 or legacy dnf). Allow an
+# externally-supplied DNF_CMD to override detection for testing.
+DNF_CMD="${DNF_CMD:-}"
+if [ -z "$DNF_CMD" ]; then
+    if command -v dnf5 >/dev/null 2>&1; then
+        DNF_CMD="$(command -v dnf5)"
+    elif command -v dnf >/dev/null 2>&1; then
+        DNF_CMD="$(command -v dnf)"
+    else
+        # Fall back to plain 'dnf' so any error about a missing command is
+        # visible in the logs instead of silently skipping work.
+        DNF_CMD="dnf"
+    fi
+fi
+
 # Smart minimum interval between refresh/dry-run runs. This reuses the
 # same CACHE_EXPIRY_MINUTES knob as the notifier so we don't hammer
 # mirrors with constant metadata/solver checks when the timer is very
@@ -1874,7 +1889,7 @@ date +%s > "$START_TIME_FILE"
 
 # Refresh package metadata (dnf makecache)
 REFRESH_ERR=$(mktemp)
-if ! /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 /usr/bin/dnf -q makecache >/dev/null 2>"$REFRESH_ERR"; then
+if ! /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 "$DNF_CMD" -q makecache >/dev/null 2>"$REFRESH_ERR"; then
     # If another package manager instance holds the lock, handle_lock_or_fail will
     # mark the status as idle and exit 0 so we do not treat it as an
     # error here.
@@ -1887,11 +1902,11 @@ if ! /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 /usr/bin/dnf -q makecache >/de
         # Best-effort metadata cleanup; ignore failures here because the
         # second makecache run below will still surface any remaining
         # error in a controlled way.
-        dnf clean metadata >/dev/null 2>&1 || true
+        "$DNF_CMD" clean metadata >/dev/null 2>&1 || true
 
         # Retry makecache once after cleaning metadata.
         REFRESH_ERR_RETRY=$(mktemp)
-        if /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 /usr/bin/dnf -q makecache >/dev/null 2>"$REFRESH_ERR_RETRY"; then
+        if /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 "$DNF_CMD" -q makecache >/dev/null 2>"$REFRESH_ERR_RETRY"; then
             # Auto-repair succeeded; clear error state and continue with
             # the normal workflow so the notifier sees a healthy status.
             rm -f "$REFRESH_ERR" "$REFRESH_ERR_RETRY"
@@ -1930,7 +1945,7 @@ rm -f "$REFRESH_ERR"
 # Get update info using a non-interactive dnf transaction preview
 DRY_OUTPUT=$(mktemp)
 DRY_ERR=$(mktemp)
-if ! /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 /usr/bin/dnf -q upgrade --assumeno $DUP_EXTRA_FLAGS > "$DRY_OUTPUT" 2>"$DRY_ERR"; then
+if ! /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 "$DNF_CMD" -q upgrade --assumeno $DUP_EXTRA_FLAGS > "$DRY_OUTPUT" 2>"$DRY_ERR"; then
     # Handle lock first; if it is just a lock, this will mark status idle
     # and exit 0 so we do not need to set an additional error state.
     handle_lock_or_fail "$DRY_ERR"
@@ -1940,10 +1955,10 @@ if ! /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 /usr/bin/dnf -q upgrade --assu
     # used for metadata refresh: clean stale repo metadata once and retry
     # the preview.
     if grep -qiE 'Failed to synchronize cache|Failed to download metadata|repomd\\.xml' "$DRY_ERR"; then
-        dnf clean metadata >/dev/null 2>&1 || true
+        "$DNF_CMD" clean metadata >/dev/null 2>&1 || true
 
         DRY_ERR_RETRY=$(mktemp)
-        if /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 /usr/bin/dnf -q upgrade --assumeno $DUP_EXTRA_FLAGS > "$DRY_OUTPUT" 2>"$DRY_ERR_RETRY"; then
+        if /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 "$DNF_CMD" -q upgrade --assumeno $DUP_EXTRA_FLAGS > "$DRY_OUTPUT" 2>"$DRY_ERR_RETRY"; then
             # Auto-repair on preview succeeded; clear error state and
             # continue as if the original preview had worked.
             rm -f "$DRY_ERR" "$DRY_ERR_RETRY"
@@ -1961,7 +1976,7 @@ if ! /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 /usr/bin/dnf -q upgrade --assu
         # anything.
         DRY_ERR_FALLBACK=$(mktemp)
         if /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 \
-            /usr/bin/dnf -q upgrade --assumeno --skip-broken --allowerasing $DUP_EXTRA_FLAGS \
+            "$DNF_CMD" -q upgrade --assumeno --skip-broken --allowerasing $DUP_EXTRA_FLAGS \
             > "$DRY_OUTPUT" 2>"$DRY_ERR_FALLBACK"; then
             # Tolerant preview succeeded; discard previous errors and
             # continue as if the original preview had worked.
@@ -2052,7 +2067,7 @@ fi
 # lock error to avoid noisy logs when another package manager instance is running.
 set +e
 DL_ERR=$(mktemp)
-/usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 /usr/bin/dnf -q upgrade --downloadonly -y $DUP_EXTRA_FLAGS >/dev/null 2>"$DL_ERR"
+/usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 "$DNF_CMD" -q upgrade --downloadonly -y $DUP_EXTRA_FLAGS >/dev/null 2>"$DL_ERR"
 DNF_RET=$?
 if [ $DNF_RET -ne 0 ]; then
     handle_lock_or_fail "$DL_ERR"
@@ -2063,7 +2078,7 @@ if [ $DNF_RET -ne 0 ]; then
     # prefetch as much as possible.
     DL_ERR_FALLBACK=$(mktemp)
     /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 \
-        /usr/bin/dnf -q upgrade --downloadonly -y --skip-broken --allowerasing $DUP_EXTRA_FLAGS \
+        "$DNF_CMD" -q upgrade --downloadonly -y --skip-broken --allowerasing $DUP_EXTRA_FLAGS \
         >/dev/null 2>"$DL_ERR_FALLBACK"
     DNF_RET=$?
     if [ $DNF_RET -eq 0 ]; then
@@ -4761,6 +4776,11 @@ set -euo pipefail
 LOG_FILE="$HOME/.local/share/dnf-notify/run-install.log"
 LOG_DIR="$(dirname "$LOG_FILE")"
 mkdir -p "$LOG_DIR" 2>/dev/null || true
+# Ensure the log directory and file are only readable by the user running
+# this helper so we don't accidentally leak command-line details.
+umask 077
+: >"$LOG_FILE" 2>/dev/null || true
+chmod 600 "$LOG_FILE" 2>/dev/null || true
 log() {
     # Best-effort logging; never fail the script because of logging issues.
     local ts
@@ -4788,6 +4808,34 @@ if [ -r "$CONFIG_FILE" ]; then
     # shellcheck disable=SC1090
     . "$CONFIG_FILE"
 fi
+
+# Detect which DNF binary to use (dnf5 or legacy dnf). Allow an
+# externally-supplied DNF_CMD/NEEDS_RESTARTING_CMD to override detection
+# for testing.
+DNF_CMD="${DNF_CMD:-}"
+if [ -z "$DNF_CMD" ]; then
+    if command -v dnf5 >/dev/null 2>&1; then
+        DNF_CMD="$(command -v dnf5)"
+    elif command -v dnf >/dev/null 2>&1; then
+        DNF_CMD="$(command -v dnf)"
+    else
+        # Fall back to plain 'dnf' so any error about a missing command is
+        # visible to the user instead of silently skipping work.
+        DNF_CMD="dnf"
+    fi
+fi
+
+NEEDS_RESTARTING_CMD="${NEEDS_RESTARTING_CMD:-}"
+if [ -z "$NEEDS_RESTARTING_CMD" ]; then
+    if command -v needs-restarting >/dev/null 2>&1; then
+        NEEDS_RESTARTING_CMD="$(command -v needs-restarting)"
+    else
+        NEEDS_RESTARTING_CMD=""
+    fi
+fi
+
+# State file for reboot-required hints consumed by other helpers/notifier.
+REBOOT_STATE_FILE="/var/log/dnf-auto/reboot-required.flag"
 
 # Enhanced install script with post-update service check
 TERMINALS=("konsole" "gnome-terminal" "kitty" "alacritty" "xterm")
@@ -4930,14 +4978,14 @@ RUN_UPDATE() {
         return 0
     fi
 
-    log "RUN_UPDATE: starting pkexec dnf upgrade with --refresh --best --skip-broken..."
+    log "RUN_UPDATE: starting pkexec ${DNF_CMD} upgrade with --refresh --best --skip-broken..."
     # Run the update, capturing stderr so we can detect a lock even if it
     # appears after our pre-check. Respect DUP_EXTRA_FLAGS from
     # /etc/dnf-auto.conf when present so users can further tune solver
     # behaviour.
     set +e
     DNF_ERR_FILE=$(mktemp)
-    pkexec dnf upgrade -y --refresh --best --skip-broken --allowerasing ${DUP_EXTRA_FLAGS:-} \
+    pkexec "$DNF_CMD" upgrade -y --refresh --best --skip-broken --allowerasing ${DUP_EXTRA_FLAGS:-} \
         2> >(tee "$DNF_ERR_FILE" | sed -E '/System management is locked/d;/Close this application before trying again/d' >&2)
     rc=$?
     set -e
@@ -4972,7 +5020,7 @@ RUN_UPDATE() {
         echo "Running 'dnf autoremove' to clean up unused dependencies..."
         log "RUN_UPDATE: running 'dnf autoremove -y' after successful upgrade"
         set +e
-        pkexec dnf autoremove -y
+        pkexec "$DNF_CMD" autoremove -y
         AR_RC=$?
         set -e
         if [ "$AR_RC" -eq 0 ]; then
@@ -5218,9 +5266,17 @@ RUN_UPDATE() {
     echo "Checking which services need to be restarted..."
     echo ""
     
+    REBOOT_REQUIRED=0
     # On Fedora, prefer 'needs-restarting' to show services/processes using old libraries.
-    if command -v needs-restarting >/dev/null 2>&1; then
-        NEEDS_OUTPUT=$(sudo needs-restarting 2>/dev/null || true)
+    if [ -n "$NEEDS_RESTARTING_CMD" ]; then
+        # First, check if a reboot is recommended.
+        "$NEEDS_RESTARTING_CMD" -r >/dev/null 2>&1
+        nr_rc=$?
+        if [ "$nr_rc" -eq 1 ]; then
+            REBOOT_REQUIRED=1
+        fi
+
+        NEEDS_OUTPUT=$(sudo "$NEEDS_RESTARTING_CMD" 2>/dev/null || true)
         echo "$NEEDS_OUTPUT"
     else
         NEEDS_OUTPUT=""
@@ -5243,6 +5299,14 @@ RUN_UPDATE() {
     else
         echo "✅ No services require restart. You're all set!"
         echo ""
+    fi
+
+    # Persist a simple reboot-required hint for other helpers/notifier.
+    if [ "$REBOOT_REQUIRED" -eq 1 ]; then
+        echo "reboot-required" | sudo tee "$REBOOT_STATE_FILE" >/dev/null 2>&1 || true
+        echo "⚠️  A system reboot is recommended to fully apply core updates (kernel/system libraries)."
+    else
+        sudo rm -f "$REBOOT_STATE_FILE" >/dev/null 2>&1 || true
     fi
 
     # After a successful upgrade, check for configuration drift by scanning
@@ -5275,11 +5339,42 @@ RUN_UPDATE() {
 
     if [ "$UPDATE_SUCCESS" = false ]; then
         if [ "$LOCKED_DURING_UPDATE" -eq 1 ]; then
-            echo "⚠  dnf could not run because system management is locked by another tool. No system packages were changed."
+            echo "⚠  ${DNF_CMD} could not run because system management is locked by another tool. No system packages were changed."
         else
-            echo "⚠️  dnf upgrade reported errors (see above), but Flatpak/Snap updates were attempted."
+            echo "⚠️  ${DNF_CMD} upgrade reported errors (see above), but Flatpak/Snap updates were attempted."
         fi
         echo ""
+    fi
+
+    # Optional post-update hooks run as root after a successful system
+    # upgrade. Executable files in /etc/dnf-auto.d/post-update/ can be
+    # used for custom integration logic (e.g. clearing caches,
+    # updating external monitoring state, etc.).
+    if [ "$UPDATE_SUCCESS" = true ]; then
+        local hook_dir hook
+        hook_dir="/etc/dnf-auto.d/post-update"
+        if [ -d "$hook_dir" ]; then
+            echo "=========================================="
+            echo "  Post-update hooks"
+            echo "=========================================="
+            echo ""
+            for hook in "$hook_dir"/*; do
+                [ -x "$hook" ] || continue
+                echo "Running hook: $hook"
+                log "RUN_UPDATE: running post-update hook $hook"
+                set +e
+                if pkexec "$hook"; then
+                    echo "  -> Hook completed successfully."
+                    log "RUN_UPDATE: hook $hook completed successfully"
+                else
+                    hook_rc=$?
+                    echo "  -> Hook failed with exit code $hook_rc (continuing)."
+                    log "RUN_UPDATE: hook $hook failed with rc=$hook_rc"
+                fi
+                set -e
+                echo ""
+            done
+        fi
     fi
 
     log "RUN_UPDATE: finished (UPDATE_SUCCESS=$UPDATE_SUCCESS)"
