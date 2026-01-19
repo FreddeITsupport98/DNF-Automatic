@@ -1,79 +1,347 @@
-# Zypper Auto-Downloader for Tumbleweed
+# DNF Auto-Downloader for Fedora
 
-![openSUSE Tumbleweed](https://img.shields.io/badge/openSUSE-Tumbleweed-73ba25?style=for-the-badge&logo=opensuse)
+A robust `systemd` architecture that automates background **DNF upgrade downloads**, provides persistent, battery‑safe **user notifications**, and cleanly installs, verifies, and uninstalls itself.
 
-A robust `systemd` architecture that automates `zypper dup` downloads, provides persistent, battery-safe **user notifications**, and cleanly upgrades any previous version.
+It is built and tested for Fedora with `dnf`/`dnf5`.
+
+## ⚡ Quick Start
+
+```bash
+chmod +x DNF-auto.sh
+sudo ./DNF-auto.sh install    # installs helper, units, and default config
+
+# Optional: run a health check after install
+dnf-auto-helper --verify
+
+# Later, just watch for "Updates ready" notifications and click Install
+```
 
 -----
 
-## 🐞 Reporting Issues?
+## 🐞 Reporting Issues
 
-**If you need help, please include the relevant logs!** See the [Reporting Issues on GitHub](#reporting-issues-on-github) section for which logs to include.
+**If you need help, please include the relevant logs.** See [Reporting Issues](#reporting-issues) for exact commands.
 
 -----
 
-## 🎯 The Goal
+## 🎯 Goal
 
-On a rolling-release distribution like Tumbleweed, updates are frequent and can be large. This script automates the most time-consuming part: the **download**.
+On Fedora, updates can be frequent and large. The slow part is usually **downloading** packages, not running `dnf upgrade` itself.
 
-It runs `zypper dup --download-only` in the background, but only when it's safe. When you're ready to update, the packages are already cached. This turns a potential 10-minute download and update process into a 1-minute, authenticated installation.
+This helper automates the slow part: it runs a background **DNF downloader** on a schedule so that, when you choose to upgrade, most or all packages are already in the cache. A "10‑minute" update becomes roughly "1 minute of authenticated install".
 
-## ✨ Key Features (v58 Architecture)
+By default it runs a full `dnf upgrade --downloadonly` in the background (configurable), but only after passing several safety checks.
 
-* **Command-Line Interface (v51):** New `zypper-auto-helper` command provides easy access to all management functions:
-    * Auto-installed to `/usr/local/bin/zypper-auto-helper`
-    * Shell aliases automatically configured for Bash, Zsh, and Fish
-    * Commands: `--verify`, `--repair`, `--diagnose`, `--check`, `--help`
-* **Advanced Verification & Auto-Repair (v51):** Comprehensive 12-point health check system:
-    * Verifies services, scripts, permissions, processes, and cache
-    * Multi-stage auto-repair with retry logic (up to 3 attempts per issue)
-    * Deep health checks: active + enabled + triggers scheduled
-    * Nuclear options for complete service resets when needed
-    * Accessible via `zypper-auto-helper --verify` after installation
-* **Real-Time Download Progress (v51–v56):** Enhanced progress tracking with visual feedback:
-* Background downloader writes precise status (`refreshing`, `downloading:TOTAL:SIZE:DOWNLOADED:PERCENT`, `complete`, `idle`)
-* Notifier shows a live-updating progress bar while downloads are in progress
-* Cache-aware logic skips fake progress when `zypper` reports everything is already in cache
-* High-priority downloads (nice -20, ionice realtime)
-* **Smart Notification Management (v51–v56):** Prevents notification spam and keeps state consistent:
-    * Synchronous notification IDs prevent duplicate popups
-    * "No updates" notification shown only once until state changes
-    * Download status notifications replace each other smoothly
-* **Robust Zypper Error Handling (v54–v57):** Distinguishes between zypper locks, PolicyKit/auth failures, and solver/interaction errors (e.g. vendor conflicts) and guides you with appropriate notifications. Zypper locks are detected via both the canonical error message *and* zypp lockfiles, so the downloader/notifier will gracefully back off (and retry later) when a manual `zypper` or YaST is running. When the background downloader hits a solver conflict it preserves any downloaded RPMs in the cache and triggers a persistent "updates require your decision" notification with an **Install Now** action, showing how many updates are pending and a short package preview once a transaction can be summarised.
-* **Soar / Flatpak / Snap / Homebrew / pipx Integration (v55–v61):** Every `zypper dup` / `zypper update` run via the helper or wrapper automatically chains Flatpak updates, Snap refresh (if installed), a Soar stable-version check + `soar sync` + `soar update` (if installed), a Homebrew `brew update` followed by conditional `brew upgrade`, **and** (when enabled) `pipx upgrade-all` so that system packages, runtimes, Soar-managed apps, Homebrew formulae, and pipx‑managed Python CLI tools stay aligned after system updates. Optional helper commands are provided via `zypper-auto-helper --soar`, `zypper-auto-helper --brew`, and `zypper-auto-helper --pip-package` (alias: `--pipx`).
-* **Smarter Optional Tool Detection (v55):** Optional helpers like Flatpak, Snap, and Soar are detected using the *user's* PATH and common per-user locations (e.g. `~/.local/bin`, `~/pkgforge`) to avoid false "missing" warnings when they are already installed.
-* **Improved Snapper Detection (v55–v56):** Recognises Tumbleweed's default root snapper configuration, treats `snapper list` permission errors ("No permissions.") as "snapshots exist but are root-only", and surfaces the current Snapper state (configured/missing/snapshots available) directly in the update notification.
-* **More Robust Notifier Timer (v55–v56):** Uses calendar-based scheduling plus an automatic timer restart after installation so the user systemd timer (`zypper-notify-user.timer`) no longer gets stuck in an `active (elapsed)` state with no next trigger.
-* **Manual Update Wrapper (v51):** Automatic post-update checks for manual updates:
-    * Wraps `sudo zypper dup` command automatically
-    * Runs `zypper ps -s` after successful updates
-    * Provides guidance on service restarts and reboots
-    * Works across all shells (Bash, Zsh, Fish)
-* **Decoupled Architecture:** Two separate services: a "safe" root-level downloader and a "smart" **user-level** notifier.
-* **User-Space Notifier:** Runs as a user service (`~/.config/systemd/user`) so it can reliably talk to your desktop session (D-Bus) and show clickable notifications.
-* **Stage-Based Download Progress (v50–v61):** Real-time notifications showing download stages:
-    * **"Checking for updates..."** - Refreshing repositories
-    * **"Downloading updates... (X of Y packages)"** - Active download with real-time progress
-    * **"✅ Downloads Complete!"** - Download finished with duration and package preview
-    * **"Updates Ready to Install"** - Ready to apply with snapshot info
-* **Smart Download Detection (v49–v61):** Only downloads and notifies when updates are actually available, eliminating false "downloading" notifications. In v61 the notifier additionally re-checks `zypper dup --dry-run` when the downloader reports `complete:` and suppresses the "✅ Downloads Complete!" popup if there are no remaining updates, avoiding stale completion notifications after you have already installed everything manually.
-* **Safe Downloads (Root):** The downloader service is a simple, root-only worker that always runs at low priority and logs to `/var/log/zypper-auto`; network/AC safety decisions are enforced in the user-space notifier.
-* **Smart Safety Logic (User):** The notifier Python script uses `upower`, `inxi` and `nmcli` with extra heuristics to distinguish real laptops from desktops/UPS setups (including laptops that only expose a battery device without a separate `line_power` entry), and to avoid false "metered" or "on battery" positives. On laptops it only refreshes/inspects updates on AC power and non‑metered connections.
-* **Fixed Battery Detection (v48):** Corrected logic that was incorrectly identifying laptops as desktops, now properly detects batteries via `inxi` output.
-* **Persistent Notifications (v48):** Update notifications now persist until user interaction or timeout by keeping a GLib main loop active.
-* **Environment Change Awareness (v53):** Tracks when your machine switches between AC/battery or metered/unmetered connections and shows "updates paused" / "conditions now safe" notifications accordingly.
-* **Snooze & Quiet Hours (v53):** Lets you snooze update reminders for 1h, 4h, or 1 day via notification buttons, with state stored under `~/.cache/zypper-notify`.
-* **Safety Preflight Checks (v53):** Before showing "Install" it checks root filesystem free space, Btrfs snapshots (snapper), and basic network health and adds warnings to the notification if something looks risky.
-* **Post-Update Service Check:** After updates complete, automatically runs `zypper ps -s` to show which services need restart and provides reboot guidance.
-* **Comprehensive Logging:** Full debug logging for installation, system services, and user notifier with automatic log rotation and persistent status tracking.
-* **Clickable Install:** The rich, Python-based notification is **clickable**. Clicking the "Install" button runs `~/.local/bin/zypper-run-install`, which opens a terminal and executes `pkexec zypper dup`.
-* **Automatic Upgrader:** The installer is idempotent and will **cleanly stop, disable, and overwrite any previous version** (v1–v58) to ensure a clean migration.
-* **Dependency Checks:** The installer verifies all necessary dependencies (`nmcli`, `upower`, `inxi`, `python3-gobject`, `pkexec`) are present and offers to install them if they are missing.
-* **Safe Scripted Uninstaller (v58):** New `--uninstall-zypper-helper` mode (alias: `--uninstall-zypper`) in `zypper-auto.sh` / `zypper-auto-helper` removes all helper services, timers (including the auto-verify health-check timer), binaries, user scripts, aliases, logs and caches with a confirmation prompt by default, plus advanced flags:
-*  * `--yes` / `-y` / `--non-interactive` – skip the prompt and proceed non-interactively
-*  * `--dry-run` – show exactly what would be removed without making any changes
-*  * `--keep-logs` – leave `/var/log/zypper-auto` installation/service logs intact while still clearing caches
-*  * It **never** removes `snapd`, Flatpak, Soar, Homebrew itself, or any zypper configuration such as `/etc/zypp/zypper.conf`.
+-----
+
+## ✨ Key Features
+
+- **Single entrypoint command:**
+  - `dnf-auto-helper` in `/usr/local/bin` (installed by `DNF-auto.sh`).
+  - Shell aliases for Bash, Zsh, and Fish so you can just type `dnf-auto-helper`.
+  - Sub‑commands: `install`, `--verify`, `--repair`, `--diagnose`, `--check`, `--reset-config`, `--soar`, `--brew`, `--pip-package` (alias: `--pipx`), and scripted uninstall modes.
+
+- **Background pre‑download of updates:**
+  - Root systemd service + timer:
+    - `dnf-autodownload.service`
+    - `dnf-autodownload.timer`
+  - Runs a controlled `dnf upgrade --downloadonly` pass using settings from `/etc/dnf-auto.conf`.
+  - Writes machine‑readable status to `/var/log/dnf-auto/download-status.txt` (e.g. `refreshing`, `downloading:…`, `complete:…`, `idle`).
+  - Default behaviour is **`DOWNLOADER_DOWNLOAD_MODE=full`** so packages are cached ahead of time. You can switch to `detect-only` if you only want notifications.
+
+- **User‑space notifier with desktop integration:**
+  - User service + timer in `~/.config/systemd/user`:
+    - `dnf-notify-user.service`
+    - `dnf-notify-user.timer`
+  - Python notifier script: `~/.local/bin/dnf-notify-updater.py`.
+  - Talks to your desktop session over D‑Bus and shows rich, clickable notifications.
+  - Distinguishes laptops vs desktops, AC vs battery, metered vs unmetered connections using `upower`, `inxi`, and `nmcli` and only runs checks when it is safe.
+
+- **Ready‑to‑Install helper:**
+  - Clickable "Install" / "Install now" actions open a terminal and run a wrapper script:
+    - `~/.local/bin/dnf-run-install`
+  - That script drives `pkexec dnf upgrade` interactively, with additional post‑update checks.
+
+- **Optional post‑update helpers:** (controlled via `/etc/dnf-auto.conf`)
+  - Flatpak updates.
+  - Snap refresh (if Snap is installed).
+  - Soar (PkgForge) stable‑version check + `soar sync` + `soar update`.
+  - Homebrew: `brew update` and conditional `brew upgrade`.
+  - pipx: optional `pipx upgrade-all` so Python CLI tools stay in sync with system updates.
+
+- **Health‑check & auto‑repair:**
+  - `dnf-auto-helper --verify` runs a 12‑point check that verifies:
+    - Root timers and services are active + enabled.
+    - User timers/services exist and are active.
+    - Helper scripts exist, are executable, and have valid syntax.
+    - Log directories and status files exist.
+    - Stale DNF PID locks are cleaned up when safe.
+    - Root filesystem free space is sane (with optional `dnf clean all`).
+  - Many common problems are auto‑fixed; remaining issues are summarised.
+  - A root service + timer (`dnf-auto-verify.service` / `dnf-auto-verify.timer`) can run the same logic periodically.
+
+- **Configuration in `/etc/dnf-auto.conf`:**
+  - Timer intervals, log retention, notifier cache/snooze behaviour.
+  - Optional helpers on/off flags (Flatpak, Snap, Soar, Homebrew, pipx).
+  - Extra DNF solver flags via `DUP_EXTRA_FLAGS` (for both downloader and preview).
+  - All values are validated; invalid values fall back to safe defaults and are logged.
+
+- **Scripted uninstaller:**
+  - `dnf-auto-helper --uninstall-zypper-helper` (retained to clean old *zypper* helper installations) removes the legacy zypper‑auto‑helper services/scripts/logs without touching DNF or Fedora configuration.
+  - DNF‑auto‑helper’s own components are also removable via the same uninstaller logic.
+
+- **Extensive logging:**
+  - Installation logs and status under `/var/log/dnf-auto/`.
+  - Service logs under `/var/log/dnf-auto/service-logs/`.
+  - Notifier logs and status under `~/.local/share/dnf-notify/`.
+  - Automatic log rotation and pruning.
+
+- **Safety first:**
+  - Installer disables common PackageKit background services that would otherwise compete for the DNF lock.
+  - Downloader runs at low CPU/IO priority; safety decisions (AC, metered, etc.) are enforced in the notifier.
+
+-----
+
+## 🧱 Architecture Overview
+
+There are three main components: the installer, the root‑level downloader/verification services, and the user‑level notifier.
+
+### 1. Installer: `DNF-auto.sh`
+
+Run once (or whenever you update config) as root:
+
+- Cleans up any older helper installations (including legacy zypper‑auto‑helper units if present).
+- Ensures dependencies are installed (e.g. `nmcli`, `upower`, `inxi`, `python3`, `python3-gobject`, `pkexec`, `semanage`).
+- Writes systemd units for:
+  - `dnf-autodownload.service` / `dnf-autodownload.timer`
+  - `dnf-cache-cleanup.service` / `dnf-cache-cleanup.timer`
+  - `dnf-auto-verify.service` / `dnf-auto-verify.timer`
+- Sets up user units and scripts for the notifier:
+  - `~/.config/systemd/user/dnf-notify-user.service` / `.timer`
+  - `~/.local/bin/dnf-notify-updater.py`, `dnf-run-install`, `dnf-with-ps`, `dnf-view-changes`.
+- Creates the `dnf-auto-helper` CLI in `/usr/local/bin` and shell aliases.
+- Loads and validates `/etc/dnf-auto.conf`, writing a documented default file if it is missing.
+
+### 2. Downloader (root service)
+
+- **Service:** `/etc/systemd/system/dnf-autodownload.service`
+  - Runs a preview + download pass using DNF (behaviour controlled by `DOWNLOADER_DOWNLOAD_MODE` and `DUP_EXTRA_FLAGS`).
+  - Writes status to `/var/log/dnf-auto/download-status.txt`:
+    - `refreshing`
+    - `downloading:…`
+    - `complete:…`
+    - `idle`
+- **Timer:** `/etc/systemd/system/dnf-autodownload.timer`
+  - Interval derived from `DL_TIMER_INTERVAL_MINUTES` in `/etc/dnf-auto.conf`.
+  - Allowed values: `1,5,10,15,30,60` minutes.
+  - Mapped to simple schedules (`minutely`, `hourly`, or `*:0/N`).
+
+### 3. Verification / Auto‑Repair (root service)
+
+- **Service:** `/etc/systemd/system/dnf-auto-verify.service`
+  - Runs the same verification logic that `dnf-auto-helper --verify` uses.
+  - Optionally sends a short desktop notification when it fixes issues (controlled by `VERIFY_NOTIFY_USER_ENABLED`).
+- **Timer:** `/etc/systemd/system/dnf-auto-verify.timer`
+  - Interval from `VERIFY_TIMER_INTERVAL_MINUTES` (same allowed values as above).
+
+### 4. Notifier (user service)
+
+- **Service:** `~/.config/systemd/user/dnf-notify-user.service`
+  - Runs `~/.local/bin/dnf-notify-updater.py` under your user.
+  - Reads downloader status, re‑checks with a non‑interactive DNF preview, and drives notifications.
+- **Timer:** `~/.config/systemd/user/dnf-notify-user.timer`
+  - Interval from `NT_TIMER_INTERVAL_MINUTES` in `/etc/dnf-auto.conf`.
+
+Typical flow:
+
+1. Downloader timer fires and pre‑downloads updates using DNF.
+2. Notifier timer wakes up, checks the cached status and DNF preview.
+3. If updates are ready, you see a **"Updates Ready"** notification with buttons like **Install**, **View Changes**, **Snooze 1h/4h/1d**.
+4. Clicking **Install** opens a terminal running `dnf-run-install`, which wraps `pkexec dnf upgrade` and post‑update helpers.
+
+-----
+
+## 🚀 Installation / Upgrade
+
+You can run the installer on a fresh Fedora system or over an existing helper installation; it is idempotent.
+
+```bash
+chmod +x DNF-auto.sh
+sudo ./DNF-auto.sh install
+```
+
+The installer will:
+
+- Create/update `/etc/dnf-auto.conf` (if missing, a documented default is written).
+- Install or update the `dnf-auto-helper` command.
+- Set up root and user systemd units.
+- Disable conflicting PackageKit background services.
+- Run syntax checks and a verification pass.
+
+After installation, restart your shell or open a new terminal so the `dnf-auto-helper` alias is available.
+
+### Using `dnf-auto-helper`
+
+```bash
+dnf-auto-helper --help          # Show help and available commands
+dnf-auto-helper install         # Re-run installation / upgrade
+dnf-auto-helper --verify        # Full health check + auto-repair
+dnf-auto-helper --repair        # Alias for --verify
+dnf-auto-helper --diagnose      # Alias for --verify
+dnf-auto-helper --check         # Syntax/self-check only
+dnf-auto-helper --reset-config  # Reset /etc/dnf-auto.conf to defaults (with backup)
+dnf-auto-helper --soar          # Optional Soar helper (install/upgrade)
+dnf-auto-helper --brew          # Optional Homebrew helper (install/upgrade)
+dnf-auto-helper --pip-package   # Optional pipx helper (install/upgrade, alias: --pipx)
+```
+
+You normally run `dnf-auto-helper` **without** `sudo`; it uses `pkexec` or root services internally when needed.
+
+-----
+
+## ⚙️ Configuration: `/etc/dnf-auto.conf`
+
+The installer reads `/etc/dnf-auto.conf` on each run. If the file is missing, a documented template is generated.
+
+Some important options (names match what `DNF-auto.sh` expects):
+
+- **Post‑update helpers**
+  - `ENABLE_FLATPAK_UPDATES`
+  - `ENABLE_SNAP_UPDATES`
+  - `ENABLE_SOAR_UPDATES`
+  - `ENABLE_BREW_UPDATES`
+  - `ENABLE_PIPX_UPDATES`
+
+- **Timer intervals** (minutes; allowed: `1,5,10,15,30,60`)
+  - `DL_TIMER_INTERVAL_MINUTES` – downloader timer frequency.
+  - `NT_TIMER_INTERVAL_MINUTES` – user notifier frequency.
+  - `VERIFY_TIMER_INTERVAL_MINUTES` – health‑check timer frequency.
+
+- **Notifier cache / snooze**
+  - `CACHE_EXPIRY_MINUTES` – how long a cached preview is trusted before forcing a new check.
+  - `SNOOZE_SHORT_HOURS`, `SNOOZE_MEDIUM_HOURS`, `SNOOZE_LONG_HOURS` – real durations for the 1h / 4h / 1d snooze buttons.
+
+- **Downloader behaviour and DNF flags**
+  - `DOWNLOADER_DOWNLOAD_MODE` (case‑sensitive):
+    - `full` (default) – run a full `dnf upgrade --downloadonly` and cache packages.
+    - `detect-only` – only run a non‑interactive preview; no pre‑download.
+  - `DUP_EXTRA_FLAGS` – extra flags appended to every DNF call made by the helper
+    (both downloader and notifier). Useful for things like `--refresh` or repo
+    selection flags.
+
+- **Lock behaviour & reminders**
+  - `LOCK_RETRY_MAX_ATTEMPTS`, `LOCK_RETRY_INITIAL_DELAY_SECONDS` – how the Ready‑to‑Install helper retries when the package manager lock is in use.
+  - `LOCK_REMINDER_ENABLED` – whether to show a small "updates paused, DNF is in use" notification while another DNF/PackageKit instance holds the lock.
+  - `NO_UPDATES_REMINDER_REPEAT_ENABLED` / `UPDATES_READY_REMINDER_REPEAT_ENABLED` – control whether identical "No updates" / "Updates ready" notifications can repeat.
+  - `VERIFY_NOTIFY_USER_ENABLED` – whether periodic verification sends a summary notification when it fixes issues.
+
+If values are missing or invalid, `DNF-auto.sh` falls back to safe defaults, logs warnings, and records them in `/var/log/dnf-auto/last-status.txt`. The helper may also suggest `dnf-auto-helper --reset-config`.
+
+-----
+
+## 🏃 Everyday Usage
+
+Once installed you normally **don’t** need to run anything manually:
+
+1. **Wait** – the downloader and notifier timers run in the background (by default every minute; configurable via `/etc/dnf-auto.conf`).
+2. **Watch for notifications** – you’ll see a notification only when updates are actually pending.
+3. **Click Install** – the **Install** button launches `dnf-run-install` in a terminal, which runs `pkexec dnf upgrade` plus any enabled helpers (Flatpak, Snap, Soar, Homebrew, pipx).
+
+### Quick Status Checks
+
+```bash
+# High-level installation/system status
+cat /var/log/dnf-auto/last-status.txt
+
+# Notifier status
+cat ~/.local/share/dnf-notify/last-run-status.txt
+
+# Raw downloader status file
+cat /var/log/dnf-auto/download-status.txt
+
+# Health check + auto-repair
+dnf-auto-helper --verify
+```
+
+-----
+
+## 📊 Logging & Monitoring
+
+- **System / installer logs:** `/var/log/dnf-auto/`
+  - `install-YYYYMMDD-HHMMSS.log` – full log of each installer run.
+  - `last-status.txt` – last high‑level status message.
+  - `service-logs/*.log` – logs from downloader / verification services.
+- **User / notifier logs:** `~/.local/share/dnf-notify/`
+  - `notifier-detailed.log` – detailed notifier log.
+  - `last-run-status.txt` – last notifier status.
+
+Example commands:
+
+```bash
+# Show most recent install log
+ls -t /var/log/dnf-auto/install-*.log | head -1 | xargs sudo cat
+
+# Downloder service logs
+sudo cat /var/log/dnf-auto/service-logs/downloader.log
+
+# Notifier details
+cat ~/.local/share/dnf-notify/notifier-detailed.log
+```
+
+Logs are automatically rotated and pruned; no manual maintenance is required.
+
+-----
+
+## 🗑️ Uninstallation
+
+### Scripted uninstaller (recommended)
+
+The helper includes a scripted uninstaller designed to **clean up helper components only** (it never removes DNF itself or Fedora configuration).
+
+```bash
+# From the directory containing DNF-auto.sh
+sudo ./DNF-auto.sh --uninstall-zypper-helper   # cleans up legacy zypper helper + DNF helper units
+
+# Or via the installed CLI
+dnf-auto-helper --uninstall-zypper-helper
+```
+
+Typical effects:
+
+- Stop & disable helper timers/services (dnf‑autodownload, dnf‑cache‑cleanup, dnf‑auto‑verify, notifier units).
+- Remove helper systemd unit files and scripts.
+- Remove user helper scripts, aliases, and notifier caches.
+- Optionally keep or delete logs under `/var/log/dnf-auto/`.
+
+Advanced flags like `--yes`, `--dry-run`, and `--keep-logs` are supported in the same way as in the legacy zypper helper.
+
+-----
+
+## 📣 Reporting Issues
+
+When filing an issue, please include at least:
+
+```bash
+# 1) Most recent installer log
+sudo cat $(ls -t /var/log/dnf-auto/install-*.log | head -1)
+
+# 2) Installer status
+cat /var/log/dnf-auto/last-status.txt
+
+# 3) Notifier detailed log
+cat ~/.local/share/dnf-notify/notifier-detailed.log
+
+# 4) Notifier last run status
+cat ~/.local/share/dnf-notify/last-run-status.txt
+```
+
+Also mention:
+
+- Your Fedora version: `cat /etc/os-release`
+- DNF version: `dnf --version` (and `dnf5 --version` if applicable)
+- A short description of what you expected vs what happened.
+
+Please **redact personal data** (usernames, hostnames, network names) from logs before posting.
 
 -----
 
