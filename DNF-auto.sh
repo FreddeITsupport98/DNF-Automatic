@@ -5162,27 +5162,9 @@ has_pkg_lock() {
         fi
     fi
 
-    # Also treat an actively held RPM database lock as a package-manager lock.
-    if [ -f "/var/lib/rpm/.rpm.lock" ] && command -v fuser >/dev/null 2>&1; then
-        if fuser "/var/lib/rpm/.rpm.lock" >/dev/null 2>&1; then
-            log "has_pkg_lock: RPM database lock /var/lib/rpm/.rpm.lock is held by another process"
-            return 0
-        fi
-    fi
-
-    # Fallback: any obviously dnf/PackageKit related process.
-    if pgrep -x dnf >/dev/null 2>&1; then
-        local zpid
-        zpid=$(pgrep -x dnf | head -n1 || true)
-        log "has_pkg_lock: detected running dnf process pid ${zpid:-unknown}"
-        return 0
-    fi
-    if pgrep -f -i 'packagekitd' >/dev/null 2>&1; then
-        local ypid
-        ypid=$(pgrep -f -i 'packagekitd' | head -n1 || true)
-        log "has_pkg_lock: detected running PackageKit process pid ${ypid:-unknown}"
-        return 0
-    fi
+    # Relaxed: do NOT treat generic RPM DB locks or background PackageKit
+    # daemons as a hard block. If dnf itself can run without complaining,
+    # we consider the system "unlocked" for interactive updates.
 
     return 1
 }
