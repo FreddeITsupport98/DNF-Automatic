@@ -17,6 +17,9 @@ fi
 
 # --- 1. Strict Mode & Config ---
 set -euo pipefail
+# Default to a restrictive umask so newly created logs and helper files
+# are not world-readable unless we explicitly relax permissions.
+umask 077
 
 # --- Logging / Configuration Defaults ---
 LOG_DIR="/var/log/dnf-auto"
@@ -51,7 +54,9 @@ SNOOZE_LONG_HOURS="24"   # used by the "1d" snooze button
 
 # Create log directory
 mkdir -p "${LOG_DIR}"
-chmod 755 "${LOG_DIR}"
+# Root log directory is readable by root and group only; individual
+# files may have their own tighter permissions (e.g. 600).
+chmod 750 "${LOG_DIR}"
 
 # Cleanup old log files (keep only the last MAX_LOG_FILES)
 cleanup_old_logs() {
@@ -1003,6 +1008,25 @@ echo "  - Checks performed: 12" | tee -a "${LOG_FILE}"
 echo "  - Problems detected: $PROBLEMS_FOUND" | tee -a "${LOG_FILE}"
 echo "  - Problems auto-fixed: $PROBLEMS_FIXED" | tee -a "${LOG_FILE}"
 echo "  - Remaining issues: $VERIFICATION_FAILED" | tee -a "${LOG_FILE}"
+
+# Reboot recommendation summary (best-effort)
+REBOOT_NEEDED_SUMMARY=0
+if command -v needs-restarting >/dev/null 2>&1; then
+    needs-restarting -r >/dev/null 2>&1
+    nr_rc=$?
+    if [ "${nr_rc:-0}" -eq 1 ]; then
+        REBOOT_NEEDED_SUMMARY=1
+    fi
+elif [ -f "/var/log/dnf-auto/reboot-required.flag" ]; then
+    REBOOT_NEEDED_SUMMARY=1
+fi
+
+if [ "$REBOOT_NEEDED_SUMMARY" -eq 1 ]; then
+    echo "  - Reboot status: reboot recommended (kernel/core updates detected)" | tee -a "${LOG_FILE}"
+else
+    echo "  - Reboot status: no reboot required (as far as needs-restarting can tell)" | tee -a "${LOG_FILE}"
+fi
+
 echo "==============================================" | tee -a "${LOG_FILE}"
 echo "" | tee -a "${LOG_FILE}"
 
@@ -1217,7 +1241,7 @@ update_status "Uninstalling dnf-auto-helper components..."
             systemctl --user stop dnf-notify-user.service >> "${LOG_FILE}" 2>&1 || true
     fi
 
-    # 3. Remove systemd unit files and root binaries
+    # 3. Remove systemd unit files, sleep hook, and root binaries
     log_debug "Removing root systemd units and binaries..."
     # DNF-based units
     rm -f /etc/systemd/system/dnf-autodownload.service >> "${LOG_FILE}" 2>&1 || true
@@ -1226,6 +1250,7 @@ update_status "Uninstalling dnf-auto-helper components..."
     rm -f /etc/systemd/system/dnf-cache-cleanup.timer >> "${LOG_FILE}" 2>&1 || true
     rm -f /etc/systemd/system/dnf-auto-verify.service >> "${LOG_FILE}" 2>&1 || true
     rm -f /etc/systemd/system/dnf-auto-verify.timer >> "${LOG_FILE}" 2>&1 || true
+    rm -f /usr/lib/systemd/system-sleep/dnf-autodownload >> "${LOG_FILE}" 2>&1 || true
     rm -f /usr/local/bin/dnf-download-with-progress >> "${LOG_FILE}" 2>&1 || true
     rm -f /usr/local/bin/dnf-auto-helper >> "${LOG_FILE}" 2>&1 || true
 
@@ -1268,6 +1293,8 @@ update_status "Uninstalling dnf-auto-helper components..."
             # Remove any service sub-logs directory completely
             rm -rf "$LOG_DIR/service-logs" >> "${LOG_FILE}" 2>&1 || true
         fi
+        # Remove logrotate configuration installed by this helper
+        rm -f /etc/logrotate.d/dnf-auto >> "${LOG_FILE}" 2>&1 || true
     fi
     if [ -n "${SUDO_USER_HOME:-}" ]; then
 rm -rf "$SUDO_USER_HOME/.local/share/dnf-notify" >> "${LOG_FILE}" 2>&1 || true
@@ -1733,6 +1760,24 @@ log_info ">>> Cleaning up old log files..."
 update_status "Cleaning up old installation logs..."
 cleanup_old_logs
 
+# --- 3c. Install logrotate configuration (if supported) ---
+LOGROTATE_CONF="/etc/logrotate.d/dnf-auto"
+if [ -d "/etc/logrotate.d" ]; then
+    log_info ">>> Creating logrotate configuration: ${LOGROTATE_CONF}"
+    cat << EOF > "${LOGROTATE_CONF}"
+/var/log/dnf-auto/install-*.log /var/log/dnf-auto/service-logs/*.log {
+    rotate 10
+    weekly
+    compress
+    missingok
+    notifempty
+    create 600 root root
+}
+EOF
+    chmod 644 "${LOGROTATE_CONF}" || true
+    log_success "logrotate configuration installed at ${LOGROTATE_CONF}"
+fi
+
 # --- 3b. Disable conflicting background updaters (PackageKit) ---
 # To avoid constant DNF lock contention, proactively disable common
 # PackageKit-based background services. This leaves interactive GUI
@@ -1762,7 +1807,7 @@ fi
 
 # Create service log directory
 mkdir -p "${LOG_DIR}/service-logs"
-chmod 755 "${LOG_DIR}/service-logs"
+chmod 750 "${LOG_DIR}/service-logs"
 
 # First, create the downloader script with progress tracking
 DOWNLOADER_SCRIPT="/usr/local/bin/dnf-download-with-progress"
@@ -1802,6 +1847,24 @@ if [ -z "$DNF_CMD" ]; then
         # visible in the logs instead of silently skipping work.
         DNF_CMD="dnf"
     fi
+fi
+
+# Flags used for "tolerant" upgrade previews/downloads when we want to
+# skip broken/unavailable packages while still allowing erasures. DNF5
+# replaced --skip-broken with --skip-unavailable, and on newer Fedora
+# releases the "dnf" shim may already be DNF5 even when there is no
+# separate dnf5 binary.
+IS_DNF5=0
+if command -v dnf5 >/dev/null 2>&1; then
+    IS_DNF5=1
+elif "$DNF_CMD" --version 2>&1 | grep -qi 'dnf5'; then
+    IS_DNF5=1
+fi
+
+if [ "$IS_DNF5" -eq 1 ]; then
+    DNF_TOLERANT_FLAGS="--skip-unavailable --allowerasing"
+else
+    DNF_TOLERANT_FLAGS="--skip-broken --allowerasing"
 fi
 
 # Smart minimum interval between refresh/dry-run runs. This reuses the
@@ -1883,6 +1946,27 @@ handle_lock_or_fail() {
     fi
 }
 
+# Attempt automatic repair for common repository/metadata problems so the
+# user does not have to run manual dnf commands. This helper is intentionally
+# conservative: it only performs metadata cleanup and a full cache refresh.
+# If that still fails, the caller will fall back to the normal error:repo
+# classification and the desktop notifier will explain the problem.
+auto_repair_repo_error() {
+    local err_file="$1"
+    local repaired=0
+
+    # Stronger cache cleanup than the lightweight metadata-only path above.
+    # This is equivalent to the common manual advice:
+    #   sudo dnf clean all
+    #   sudo dnf makecache
+    "$DNF_CMD" clean all >/dev/null 2>&1 || true
+    if /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 "$DNF_CMD" -q makecache >/dev/null 2>"$err_file"; then
+        repaired=1
+    fi
+
+    return "$repaired"
+}
+
 # Write status: refreshing
 echo "refreshing" > "$STATUS_FILE"
 date +%s > "$START_TIME_FILE"
@@ -1924,20 +2008,30 @@ if ! /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 "$DNF_CMD" -q makecache >/dev/
     if [ "${goto_after_refresh_success:-0}" -eq 1 ]; then
         : # no-op; jump to the common success path below
     else
-        # Classify as a network/repository problem so the notifier can
-        # surface a clear error message instead of silently doing nothing.
-        if grep -qi "could not resolve host" "$REFRESH_ERR" || \
-           grep -qi "Failed to retrieve new repository metadata" "$REFRESH_ERR"; then
-            echo "error:network" > "$STATUS_FILE"
+        # One more automatic repair pass: run a full "dnf clean all &&
+        # makecache" cycle to emulate the usual manual fix users would
+        # perform in a terminal. Only if this also fails do we fall back
+        # to reporting error:repo so the notifier can explain the problem.
+        if auto_repair_repo_error "$REFRESH_ERR"; then
+            rm -f "$REFRESH_ERR"
+            # Successful auto-repair; continue with the normal workflow as if
+            # the initial makecache had succeeded.
         else
-            echo "error:repo" > "$STATUS_FILE"
-        fi
+            # Classify as a network/repository problem so the notifier can
+            # surface a clear error message instead of silently doing nothing.
+            if grep -qi "could not resolve host" "$REFRESH_ERR" || \
+               grep -qi "Failed to retrieve new repository metadata" "$REFRESH_ERR"; then
+                echo "error:network" > "$STATUS_FILE"
+            else
+                echo "error:repo" > "$STATUS_FILE"
+            fi
 
-        cat "$REFRESH_ERR" >&2 || true
-        rm -f "$REFRESH_ERR"
-        # Exit 0 so systemd does not mark the service failed; the notifier
-        # will pick up the error:* status on the next run.
-        exit 0
+            cat "$REFRESH_ERR" >&2 || true
+            rm -f "$REFRESH_ERR"
+            # Exit 0 so systemd does not mark the service failed; the notifier
+            # will pick up the error:* status on the next run.
+            exit 0
+        fi
     fi
 fi
 rm -f "$REFRESH_ERR"
@@ -1976,7 +2070,7 @@ if ! /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 "$DNF_CMD" -q upgrade --assume
         # anything.
         DRY_ERR_FALLBACK=$(mktemp)
         if /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 \
-            "$DNF_CMD" -q upgrade --assumeno --skip-broken --allowerasing $DUP_EXTRA_FLAGS \
+            "$DNF_CMD" -q upgrade --assumeno $DNF_TOLERANT_FLAGS $DUP_EXTRA_FLAGS \
             > "$DRY_OUTPUT" 2>"$DRY_ERR_FALLBACK"; then
             # Tolerant preview succeeded; discard previous errors and
             # continue as if the original preview had worked.
@@ -2078,7 +2172,7 @@ if [ $DNF_RET -ne 0 ]; then
     # prefetch as much as possible.
     DL_ERR_FALLBACK=$(mktemp)
     /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 \
-        "$DNF_CMD" -q upgrade --downloadonly -y --skip-broken --allowerasing $DUP_EXTRA_FLAGS \
+        "$DNF_CMD" -q upgrade --downloadonly -y $DNF_TOLERANT_FLAGS $DUP_EXTRA_FLAGS \
         >/dev/null 2>"$DL_ERR_FALLBACK"
     DNF_RET=$?
     if [ $DNF_RET -eq 0 ]; then
@@ -2176,12 +2270,34 @@ systemctl daemon-reload >> "${LOG_FILE}" 2>&1
 
 log_debug "Enabling and starting timer..."
 if systemctl enable --now "${DL_SERVICE_NAME}.timer" >> "${LOG_FILE}" 2>&1; then
-    log_success "Downloader timer enabled and started"
+log_success "Downloader timer enabled and started"
 else
     log_error "Failed to enable downloader timer"
     update_status "FAILED: Could not enable downloader timer"
     exit 1
 fi
+
+# Install a small systemd-sleep hook so that shortly after resume from
+# suspend/hibernate we trigger a fresh downloader run. This improves
+# responsiveness on laptops that are often asleep when the normal timer
+# would fire.
+SLEEP_HOOK="/usr/lib/systemd/system-sleep/dnf-autodownload"
+log_info ">>> Creating system-sleep hook for downloader resume: ${SLEEP_HOOK}"
+cat << 'EOF' > "$SLEEP_HOOK"
+#!/usr/bin/env bash
+# systemd-sleep hook: run dnf-autodownload.service shortly after resume
+case "$1" in
+    pre)
+        # Nothing to do before suspend
+        ;;
+    post)
+        /usr/bin/systemctl start dnf-autodownload.service >/dev/null 2>&1 || true
+        ;;
+esac
+exit 0
+EOF
+chmod 755 "$SLEEP_HOOK" || true
+log_success "System-sleep hook installed for downloader resume"
 
 # --- 6b. Create Cache Cleanup Service ---
 log_info ">>> Creating (root) cache cleanup service: ${CLEANUP_SERVICE_FILE}"
@@ -2860,6 +2976,8 @@ CACHE_EXPIRY_MINUTES = 10
 
 # Global config path for dnf-auto-helper
 CONFIG_FILE = "/etc/dnf-auto.conf"
+# Reboot-required hint written by the Ready-to-Install helper
+REBOOT_STATE_FILE = "/var/log/dnf-auto/reboot-required.flag"
 # Cache and snooze configuration (overridable via environment, see systemd unit)
 def _int_env(name: str, default: int) -> int:
     raw = os.getenv(name)
@@ -2926,15 +3044,54 @@ def update_status(status: str) -> None:
             f.write(f"[{timestamp}] {status}\n")
     except Exception as e:
         log_error(f"Failed to update status file: {e}")
+# --- Helper: read config via a tiny Bash subprocess so semantics match the installer ---
 
-# --- Helper: read extra dup flags from CONFIG_FILE (/etc/dnf-auto.conf by default) ---
+
+def _bash_read_config_var(name: str) -> str | None:
+    """Source CONFIG_FILE in a Bash subprocess and echo $name.
+
+    This keeps Python in sync with the Bash installer’s interpretation of
+    /etc/dnf-auto.conf (quoting, defaults, etc.). Returns the raw string
+    value or None if unset/unavailable.
+    """
+    if not os.path.exists(CONFIG_FILE):
+        return None
+    try:
+        script = (
+            f"source {shlex.quote(CONFIG_FILE)} >/dev/null 2>&1 || true; "
+            f"printf '%s' \"${{{name}:-}}\""
+        )
+        out = subprocess.check_output(
+            ["bash", "-lc", script],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+        val = out.strip()
+        return val or None
+    except subprocess.TimeoutExpired:
+        log_debug(f"bash config helper timed out while reading {name}")
+    except FileNotFoundError:
+        # bash missing would be very unusual on Fedora
+        pass
+    except Exception as e:
+        log_debug(f"bash config helper failed for {name}: {e}")
+    return None
+
 
 def _read_dup_extra_flags() -> list[str]:
     """Read DUP_EXTRA_FLAGS from CONFIG_FILE (usually /etc/dnf-auto.conf), if set.
 
-    The value is split using shell-like rules so users can write e.g.:
-        DUP_EXTRA_FLAGS="--allow-vendor-change --from my-repo"
+    Prefer to source the config via Bash so quoting semantics match the
+    installer; fall back to a simple text parse if that fails.
     """
+    from_bash = _bash_read_config_var("DUP_EXTRA_FLAGS")
+    if from_bash:
+        try:
+            return shlex.split(from_bash)
+        except Exception as e:  # pragma: no cover
+            log_debug(f"Failed to parse DUP_EXTRA_FLAGS from bash='{from_bash}': {e}")
+
     try:
         with open(CONFIG_FILE, "r", encoding="utf-8") as f:
             for line in f:
@@ -2943,15 +3100,12 @@ def _read_dup_extra_flags() -> list[str]:
                     continue
                 if not stripped.startswith("DUP_EXTRA_FLAGS"):
                     continue
-                # Expect shell-style "NAME=VALUE"
                 parts = stripped.split("=", 1)
                 if len(parts) != 2:
                     continue
                 raw = parts[1].strip()
-                # Remove optional surrounding quotes
                 if (raw.startswith("\"") and raw.endswith("\"")) or (
-                    raw.startswith("'") and raw.endswith("'")
-                ):
+                    raw.startswith("'") and raw.endswith("'")):
                     raw = raw[1:-1]
                 try:
                     return shlex.split(raw)
@@ -2968,9 +3122,19 @@ def _read_dup_extra_flags() -> list[str]:
 def _read_bool_from_config(name: str, default: bool) -> bool:
     """Best-effort boolean reader for CONFIG_FILE (usually /etc/dnf-auto.conf).
 
-    Accepts typical shell-style booleans such as true/false, yes/no,
-    on/off, 1/0 (case-insensitive after stripping quotes and spaces).
+    Prefer using Bash to read the value so we honour the same defaults as
+    the installer; fall back to a simple text parse when needed.
     """
+    raw = _bash_read_config_var(name)
+    if raw is not None:
+        value = raw.strip().strip("'\"").strip().lower()
+        if value in ("1", "true", "yes", "on", "enabled"):
+            return True
+        if value in ("0", "false", "no", "off", "disabled"):
+            return False
+        log_debug(f"Invalid boolean for {name} in bash config: {raw!r}, using default {default}")
+        return default
+
     try:
         with open(CONFIG_FILE, "r", encoding="utf-8") as f:
             for line in f:
@@ -2982,11 +3146,11 @@ def _read_bool_from_config(name: str, default: bool) -> bool:
                 parts = stripped.split("=", 1)
                 if len(parts) != 2:
                     continue
-                raw = parts[1].strip().strip("'\"").strip()
-                value = raw.lower()
-                if value in ("1", "true", "yes", "on", "enabled"):
+                raw2 = parts[1].strip().strip("'\"").strip()
+                value2 = raw2.lower()
+                if value2 in ("1", "true", "yes", "on", "enabled"):
                     return True
-                if value in ("0", "false", "no", "off", "disabled"):
+                if value2 in ("0", "false", "no", "off", "disabled"):
                     return False
         return default
     except FileNotFoundError:
@@ -3229,16 +3393,38 @@ def check_snapshots() -> tuple[bool, str]:
     msg = "Snapper not configured or no snapshots"
     log_info(msg)
     return False, msg
+def _curl_connectivity_probe() -> tuple[bool, str]:
+    """Fallback connectivity test using curl against a simple HTTP endpoint."""
+    try:
+        result = subprocess.run(
+            [
+                "curl",
+                "-I",
+                "--silent",
+                "--fail",
+                "http://fedoraproject.org",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return True, "Network reachable (curl probe)"
+        log_info("curl connectivity probe failed")
+        return False, "Network probe failed (curl)"
+    except FileNotFoundError:
+        return True, "Network check skipped (curl not installed)"
+    except Exception as e:
+        log_debug(f"curl connectivity probe failed: {e}")
+        return True, "Network check skipped"
+
+
 def check_network_quality() -> tuple[bool, str]:
-    """Check connectivity using NetworkManager (firewall friendly).
+    """Check connectivity using NetworkManager when possible, with curl fallback.
 
     Returns: (is_good, message)
     """
     try:
-        # nmcli general reports overall connectivity state for the host.
-        # We treat "full" and "limited" as usable so that captive portals or
-        # partial connectivity still allow the updater to run, but anything
-        # else ("none", "portal", "unknown") is treated as a failure.
         result = subprocess.run(
             ['nmcli', '-t', '-f', 'CONNECTIVITY', 'general'],
             capture_output=True,
@@ -3251,21 +3437,17 @@ def check_network_quality() -> tuple[bool, str]:
         if status == "full":
             return True, "Network connection is full"
         if status == "limited":
-            # Limited connectivity is often a captive portal; allow but log.
             log_info("Network connectivity is limited (possibly captive portal)")
             return True, "Network is limited (captive portal?)"
 
         if not status:
-            msg = "Network connectivity status unknown"
+            log_info("Network connectivity status unknown from nmcli; falling back to curl probe")
         else:
-            msg = f"Network status: {status}"
-        log_info(msg)
-        return False, msg
+            log_info(f"Network status from nmcli: {status}; validating with curl probe")
+        return _curl_connectivity_probe()
     except Exception as e:
-        # If NetworkManager/nmcli is unavailable or misconfigured, don't
-        # block updates entirely – just log and fall back to "unknown".
         log_debug(f"NMCLI connectivity check failed: {e}")
-        return True, "Network check skipped"
+        return _curl_connectivity_probe()
 
 
 def is_package_manager_locked(stderr_text: str | None = None) -> bool:
@@ -3337,6 +3519,30 @@ def is_package_manager_locked(stderr_text: str | None = None) -> bool:
 
     return False
 
+
+# Detect which DNF binary to use for previews (dnf5 or legacy dnf).
+# Transactions still run under pkexec; here we just care about the
+# client binary path for --assumeno previews.
+
+def _detect_dnf_cmd() -> str:
+    for cand in ("/usr/bin/dnf5", "/usr/bin/dnf", "dnf5", "dnf"):
+        try:
+            result = subprocess.run(
+                ["bash", "-lc", f"command -v {shlex.quote(cand)} || true"],
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+            path = (result.stdout or "").strip()
+            if path:
+                return path
+        except Exception:
+            continue
+    return "dnf"
+
+
+DNF_CMD = _detect_dnf_cmd()
+base_env = os.environ.copy()
 
 # Rotate log at startup if needed
 rotate_log_if_needed()
@@ -3728,9 +3934,10 @@ def get_updates():
 
     # Run dnf in a stable C locale so that output is always English, which our
     # regex/parser expects. This avoids issues on systems where DNF is
-    # localised (Spanish, German, etc.).
-    base_env = os.environ.copy()
-    base_env["LC_ALL"] = "C"
+    # localised (Spanish, German, etc.). We reuse the global base_env so the
+    # same environment is used for all helper previews.
+    base_env_local = base_env.copy()
+    base_env_local["LC_ALL"] = "C"
 
     try:
         safe = is_safe()
@@ -3743,11 +3950,12 @@ def get_updates():
 
         log_info("Safe to refresh. Running full check...")
         update_status("Running dnf makecache (refreshing metadata)...")
-        log_debug("Executing: pkexec /usr/bin/sh -c 'LC_ALL=C /usr/bin/dnf -q makecache'")
+        cache_cmd_str = "LC_ALL=C " + shlex.quote(DNF_CMD) + " -q makecache"
+        log_debug(f"Executing: pkexec /usr/bin/sh -c {cache_cmd_str!r}")
 
-        env = base_env.copy()
+        env = base_env_local.copy()
         subprocess.run(
-            ["pkexec", "/usr/bin/sh", "-c", "LC_ALL=C /usr/bin/dnf -q makecache"],
+            ["pkexec", "/usr/bin/sh", "-c", cache_cmd_str],
             check=True,
             capture_output=True,
             env=env,
@@ -3755,7 +3963,6 @@ def get_updates():
         log_info("dnf makecache completed successfully")
 
         update_status("Running dnf upgrade --assumeno (preview)...")
-        log_debug("Executing: pkexec /usr/bin/sh -c 'LC_ALL=C /usr/bin/dnf -q upgrade --assumeno'")
 
         # Build a shell-safe representation of extra flags so they are
         # honoured even when running under sh -c.
@@ -3769,9 +3976,11 @@ def get_updates():
             if DUP_EXTRA_FLAGS:
                 shell_flags = " " + " ".join(str(f) for f in DUP_EXTRA_FLAGS)
 
-        cmd_str = "LC_ALL=C /usr/bin/dnf -q upgrade --assumeno" + shell_flags
+        cmd_str = "LC_ALL=C " + shlex.quote(DNF_CMD) + " -q upgrade --assumeno" + shell_flags
+        log_debug(f"Executing: pkexec /usr/bin/sh -c {cmd_str!r}")
+
         dup_cmd = ["pkexec", "/usr/bin/sh", "-c", cmd_str]
-        env = base_env.copy()
+        env = base_env_local.copy()
         result = subprocess.run(
             dup_cmd,
             check=True,
@@ -4299,7 +4508,8 @@ def main():
                         pending_count = None
                         try:
                             log_debug("Verifying pending updates for downloads-complete status...")
-                            # Reuse the same LC_ALL=C shell wrapping as in get_updates()
+                            # Reuse the same LC_ALL=C shell wrapping as in get_updates(),
+                            # but honour the detected DNF_CMD path.
                             shell_flags = ""
                             try:
                                 import shlex as _shlex_for_flags2
@@ -4309,7 +4519,7 @@ def main():
                                 if DUP_EXTRA_FLAGS:
                                     shell_flags = " " + " ".join(str(f) for f in DUP_EXTRA_FLAGS)
 
-                            cmd_str = "LC_ALL=C /usr/bin/dnf -q upgrade --assumeno" + shell_flags
+                            cmd_str = "LC_ALL=C " + shlex.quote(DNF_CMD) + " -q upgrade --assumeno" + shell_flags
                             preview_cmd = [
                                 "pkexec",
                                 "/usr/bin/sh",
@@ -4487,7 +4697,7 @@ def main():
                             if DUP_EXTRA_FLAGS:
                                 shell_flags = " " + " ".join(str(f) for f in DUP_EXTRA_FLAGS)
 
-                        cmd_str = "LC_ALL=C /usr/bin/dnf -q upgrade --assumeno" + shell_flags
+                        cmd_str = "LC_ALL=C " + shlex.quote(DNF_CMD) + " -q upgrade --assumeno" + shell_flags
                         conflict_cmd = [
                             "pkexec",
                             "/usr/bin/sh",
@@ -4668,6 +4878,13 @@ def main():
         if warnings:
             message += "\n\n" + "\n".join(warnings)
 
+        # If a reboot is flagged as recommended, add a clear hint.
+        try:
+            if Path(REBOOT_STATE_FILE).is_file():
+                message += "\n\n⚠️ A system reboot is recommended to complete core updates."
+        except Exception as e:
+            log_debug(f"Failed to read reboot-required flag: {e}")
+
         # Check if this notification is different from the last one
         last_notification = _read_last_notification()
         current_notification = f"{title}|{message}"
@@ -4837,8 +5054,12 @@ fi
 # State file for reboot-required hints consumed by other helpers/notifier.
 REBOOT_STATE_FILE="/var/log/dnf-auto/reboot-required.flag"
 
-# Enhanced install script with post-update service check
-TERMINALS=("konsole" "gnome-terminal" "kitty" "alacritty" "xterm")
+# Preferred terminals for interactive updates. We favour desktop-aware
+# launchers first (xdg-terminal-exec) and then fall back through a list
+# of common terminal emulators.
+PREFERRED_TERMINALS=(
+    "konsole" "gnome-terminal" "xfce4-terminal" "kitty" "alacritty" "foot" "wezterm" "tilix" "xterm"
+)
 
 # Helper to detect whether system management is currently locked by
 # another package manager (dnf, PackageKit, etc.).
@@ -4978,14 +5199,32 @@ RUN_UPDATE() {
         return 0
     fi
 
-    log "RUN_UPDATE: starting pkexec ${DNF_CMD} upgrade with --refresh --best --skip-broken..."
+# Determine whether we are talking to a DNF5-style CLI so we can choose
+# the correct tolerant flags. On newer Fedora releases the "dnf" shim may
+# already be DNF5 even if there is no separate dnf5 binary installed.
+IS_DNF5=0
+if command -v dnf5 >/dev/null 2>&1; then
+    IS_DNF5=1
+elif "$DNF_CMD" --version 2>&1 | grep -qi 'dnf5'; then
+    IS_DNF5=1
+fi
+
+# Build tolerant flags for interactive upgrades as well.
+DNF_TOLERANT_FLAGS_INTERACTIVE=("--refresh" "--best")
+if [ "$IS_DNF5" -eq 1 ]; then
+    DNF_TOLERANT_FLAGS_INTERACTIVE+=("--skip-unavailable" "--allowerasing")
+else
+    DNF_TOLERANT_FLAGS_INTERACTIVE+=("--skip-broken" "--allowerasing")
+fi
+
+log "RUN_UPDATE: starting pkexec ${DNF_CMD} upgrade with tolerant flags..."
     # Run the update, capturing stderr so we can detect a lock even if it
     # appears after our pre-check. Respect DUP_EXTRA_FLAGS from
     # /etc/dnf-auto.conf when present so users can further tune solver
     # behaviour.
     set +e
     DNF_ERR_FILE=$(mktemp)
-    pkexec "$DNF_CMD" upgrade -y --refresh --best --skip-broken --allowerasing ${DUP_EXTRA_FLAGS:-} \
+    pkexec "$DNF_CMD" upgrade -y "${DNF_TOLERANT_FLAGS_INTERACTIVE[@]}" ${DUP_EXTRA_FLAGS:-} \
         2> >(tee "$DNF_ERR_FILE" | sed -E '/System management is locked/d;/Close this application before trying again/d' >&2)
     rc=$?
     set -e
@@ -5405,8 +5644,21 @@ fi
 export -f RUN_UPDATE || true
 
 # Run the update in a terminal
-log "Terminal selection: candidates: ${TERMINALS[*]}"
-for term in "${TERMINALS[@]}"; do
+# 1) Prefer xdg-terminal-exec when available, as it respects the
+#    user’s desktop environment configuration.
+if command -v xdg-terminal-exec >/dev/null 2>&1; then
+    log "Using xdg-terminal-exec to run inner helper (--inner)"
+    set +e
+    xdg-terminal-exec bash -lc '"$HOME"/.local/bin/dnf-run-install --inner'
+    rc=$?
+    set -e
+    log "xdg-terminal-exec finished with exit code $rc"
+    exit 0
+fi
+
+# 2) Fall back to a list of known terminal emulators.
+log "Terminal selection: candidates: ${PREFERRED_TERMINALS[*]}"
+for term in "${PREFERRED_TERMINALS[@]}"; do
     log "Checking terminal: $term"
     if command -v "$term" >/dev/null 2>&1; then
         log "Using terminal '$term' to run inner helper (--inner)"
@@ -5427,7 +5679,15 @@ for term in "${TERMINALS[@]}"; do
                 log "gnome-terminal finished with exit code $rc"
                 exit 0
                 ;;
-            kitty|alacritty|xterm)
+            xfce4-terminal)
+                set +e
+                xfce4-terminal -e 'bash -lc "\"$HOME\"/.local/bin/dnf-run-install --inner"' >/dev/null 2>&1
+                rc=$?
+                set -e
+                log "xfce4-terminal finished with exit code $rc"
+                exit 0
+                ;;
+            kitty|alacritty|foot|wezterm|tilix|xterm)
                 set +e
                 "$term" -e bash -lc '"$HOME"/.local/bin/dnf-run-install --inner'
                 rc=$?
@@ -5795,6 +6055,7 @@ if [ -d /etc/polkit-1/rules.d ]; then
 // prompt. This covers:
 //   pkexec /usr/bin/sh -c 'LC_ALL=C /usr/bin/dnf -q makecache'
 //   pkexec /usr/bin/sh -c 'LC_ALL=C /usr/bin/dnf -q upgrade --assumeno'
+// and the equivalent invocations using /usr/bin/dnf5 when present.
 polkit.addRule(function(action, subject) {
     if (action.id == "org.freedesktop.policykit.exec" &&
         subject.isInGroup("wheel")) {
@@ -5805,7 +6066,7 @@ polkit.addRule(function(action, subject) {
         }
 
         // Legacy direct dnf path: pkexec /usr/bin/dnf -q ...
-        if (cmd == "/usr/bin/dnf") {
+        if (cmd == "/usr/bin/dnf" || cmd == "/usr/bin/dnf5") {
             // Expect argv like: ["/usr/bin/dnf", "-q", "makecache", ...]
             if (argv.length >= 3 && argv[1] == "-q") {
                 if (argv[2] == "makecache") {
@@ -5828,10 +6089,12 @@ polkit.addRule(function(action, subject) {
             // Normalise by trimming leading/trailing whitespace
             script = script.trim();
 
-            if (script.indexOf("LC_ALL=C /usr/bin/dnf -q makecache") === 0) {
+            if (script.indexOf("LC_ALL=C /usr/bin/dnf -q makecache") === 0 ||
+                script.indexOf("LC_ALL=C /usr/bin/dnf5 -q makecache") === 0) {
                 return polkit.Result.YES;
             }
-            if (script.indexOf("LC_ALL=C /usr/bin/dnf -q upgrade --assumeno") === 0) {
+            if (script.indexOf("LC_ALL=C /usr/bin/dnf -q upgrade --assumeno") === 0 ||
+                script.indexOf("LC_ALL=C /usr/bin/dnf5 -q upgrade --assumeno") === 0) {
                 return polkit.Result.YES;
             }
         }
