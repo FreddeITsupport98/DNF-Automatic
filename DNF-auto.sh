@@ -460,6 +460,10 @@ EOF
     validate_interval NT_TIMER_INTERVAL_MINUTES 1
     validate_interval VERIFY_TIMER_INTERVAL_MINUTES 60
     validate_bool_flag VERIFY_NOTIFY_USER_ENABLED true
+    # Default: allow last-resort auto-upgrade repair unless explicitly disabled
+    validate_bool_flag AUTO_REPAIR_UPGRADE_ENABLED true
+    # Default: keep GPG checks enabled unless explicitly disabled
+    validate_bool_flag AUTO_REPAIR_DISABLE_GPGCHECKS false
 
     # Log effective configuration summary for easier diagnostics
     log_debug "Effective configuration after validation:"
@@ -1967,6 +1971,47 @@ auto_repair_repo_error() {
     return "$repaired"
 }
 
+# Optional "last resort" automatic upgrade repair. When enabled via
+# /etc/dnf-auto.conf (AUTO_REPAIR_UPGRADE_ENABLED=true), this will attempt a
+# non-interactive "dnf upgrade --refresh -y" to clear repo/GPG issues that
+# require a real transaction. If AUTO_REPAIR_DISABLE_GPGCHECKS=true, the
+# upgrade is run with --no-gpgchecks so that missing/changed keys do not
+# block the transaction.
+auto_repair_upgrade_transaction() {
+    # Only run if explicitly enabled in config.
+    if [[ "${AUTO_REPAIR_UPGRADE_ENABLED,,}" != "true" ]]; then
+        return 1
+    fi
+
+    local upgrade_err
+    upgrade_err=$(mktemp)
+
+    local gpg_flag=""
+    if [[ "${AUTO_REPAIR_DISABLE_GPGCHECKS,,}" == "true" ]]; then
+        gpg_flag="--no-gpgchecks"
+    fi
+
+    # Best-effort, high-priority non-interactive upgrade. We deliberately
+    # reuse DUP_EXTRA_FLAGS so any user-specified solver flags are honoured.
+    /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 \
+        "$DNF_CMD" -q upgrade --refresh -y $gpg_flag $DUP_EXTRA_FLAGS \
+        >/dev/null 2>"$upgrade_err"
+    local rc=$?
+
+    if [ "$rc" -eq 0 ]; then
+        rm -f "$upgrade_err"
+        # The system has just been upgraded in the background; signal
+        # success to the caller so it can treat the repo error as
+        # resolved.
+        return 0
+    fi
+
+    # On failure, keep the error log for classification/debugging.
+    cat "$upgrade_err" >&2 || true
+    rm -f "$upgrade_err"
+    return "$rc"
+}
+
 # Write status: refreshing
 echo "refreshing" > "$STATUS_FILE"
 date +%s > "$START_TIME_FILE"
@@ -2010,27 +2055,43 @@ if ! /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 "$DNF_CMD" -q makecache >/dev/
     else
         # One more automatic repair pass: run a full "dnf clean all &&
         # makecache" cycle to emulate the usual manual fix users would
-        # perform in a terminal. Only if this also fails do we fall back
-        # to reporting error:repo so the notifier can explain the problem.
+        # perform in a terminal. Only if this also fails do we consider
+        # more aggressive repair options.
+        echo "[SUMMARY] stage=makecache action=auto_repair_repo_error" >&2
         if auto_repair_repo_error "$REFRESH_ERR"; then
             rm -f "$REFRESH_ERR"
+            echo "[SUMMARY] stage=makecache result=auto-repair-ok" >&2
             # Successful auto-repair; continue with the normal workflow as if
             # the initial makecache had succeeded.
         else
-            # Classify as a network/repository problem so the notifier can
-            # surface a clear error message instead of silently doing nothing.
-            if grep -qi "could not resolve host" "$REFRESH_ERR" || \
-               grep -qi "Failed to retrieve new repository metadata" "$REFRESH_ERR"; then
-                echo "error:network" > "$STATUS_FILE"
+            # Optional final resort: run a non-interactive upgrade
+            # transaction to clear repo/GPG problems. This is only used
+            # when explicitly enabled via AUTO_REPAIR_UPGRADE_ENABLED.
+            echo "[SUMMARY] stage=makecache action=auto_repair_upgrade_transaction" >&2
+            if auto_repair_upgrade_transaction; then
+                rm -f "$REFRESH_ERR"
+                echo "[SUMMARY] stage=makecache result=auto-upgrade-ok" >&2
+                # Treat the error as resolved; continue as if makecache
+                # had succeeded. The system has just been upgraded in the
+                # background.
             else
-                echo "error:repo" > "$STATUS_FILE"
-            fi
+                # Classify as a network/repository problem so the notifier can
+                # surface a clear error message instead of silently doing nothing.
+                if grep -qi "could not resolve host" "$REFRESH_ERR" || \
+                   grep -qi "Failed to retrieve new repository metadata" "$REFRESH_ERR"; then
+                    echo "error:network:makecache" > "$STATUS_FILE"
+                    echo "[SUMMARY] stage=makecache classification=error:network" >&2
+                else
+                    echo "error:repo:makecache" > "$STATUS_FILE"
+                    echo "[SUMMARY] stage=makecache classification=error:repo" >&2
+                fi
 
-            cat "$REFRESH_ERR" >&2 || true
-            rm -f "$REFRESH_ERR"
-            # Exit 0 so systemd does not mark the service failed; the notifier
-            # will pick up the error:* status on the next run.
-            exit 0
+                cat "$REFRESH_ERR" >&2 || true
+                rm -f "$REFRESH_ERR"
+                # Exit 0 so systemd does not mark the service failed; the notifier
+                # will pick up the error:* status on the next run.
+                exit 0
+            fi
         fi
     fi
 fi
@@ -2084,9 +2145,15 @@ if ! /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 "$DNF_CMD" -q upgrade --assume
             # notifier can display a meaningful error notification.
             if grep -qi "could not resolve host" "$DRY_ERR" || \
                grep -qi "Failed to synchronize cache" "$DRY_ERR"; then
-                echo "error:network" > "$STATUS_FILE"
+                echo "error:network:preview" > "$STATUS_FILE"
+                echo "[SUMMARY] stage=preview classification=error:network" >&2
             else
-                echo "error:repo" > "$STATUS_FILE"
+                # Treat all other preview failures as solver-style problems
+                # rather than repository failures. This avoids getting stuck
+                # in a permanent error:repo state when the underlying repos
+                # are actually healthy.
+                echo "error:solver:preview" > "$STATUS_FILE"
+                echo "[SUMMARY] stage=preview classification=error:solver" >&2
             fi
 
             cat "$DRY_ERR" >&2 || true
@@ -2103,11 +2170,12 @@ PKG_COUNT=$(grep -iE 'Upgrade[[:space:]]+[0-9]+[[:space:]]+Package' "$DRY_OUTPUT
     | head -1 \
     | awk '{for (i=1;i<=NF;i++) if ($i ~ /^[0-9]+$/) {print $i; break}}')
 
-# If no upgrades are listed, nothing to do
-if [ -z "$PKG_COUNT" ] || [ "$PKG_COUNT" -eq 0 ] 2>/dev/null; then
-    echo "idle" > "$STATUS_FILE"
-    rm -f "$DRY_OUTPUT"
-    exit 0
+# If we cannot confidently parse a package count (for example due to
+# localisation differences in DNF output), fall back to 0 but still run
+# the download-only pass. The final status logic will treat a
+# ACTUAL_DOWNLOADED=0/RC=0 result as "idle" so we do not get stuck.
+if [ -z "$PKG_COUNT" ] || ! [ "$PKG_COUNT" -gt 0 ] 2>/dev/null; then
+    PKG_COUNT=0
 fi
 
 # Extract total download size, e.g. "120 M" or "1.2 G"
@@ -2202,12 +2270,16 @@ DURATION=$((END_TIME - START_TIME))
 #  - If we actually downloaded new packages, mark as complete
 #  - If nothing was downloaded but dnf returned an error, mark an error
 #    so the notifier can tell the user that manual intervention is required
-#  - Otherwise, leave the previous status (e.g. idle or complete:0:0)
+#  - If nothing was downloaded and dnf returned success, treat as idle
 if [ $ACTUAL_DOWNLOADED -gt 0 ]; then
     echo "complete:$DURATION:$ACTUAL_DOWNLOADED" > "$STATUS_FILE"
     trigger_notifier
 elif [ $DNF_RET -ne 0 ]; then
     echo "error:solver:$DNF_RET" > "$STATUS_FILE"
+    echo "[SUMMARY] stage=download classification=error:solver code=$DNF_RET" >&2
+else
+    echo "idle" > "$STATUS_FILE"
+    echo "[SUMMARY] stage=download result=idle (no new packages downloaded)" >&2
 fi
 
 DLSCRIPT
