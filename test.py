@@ -34,6 +34,16 @@ except Exception as e:
     sys.exit(1)
 # ---------------------
 
+# This test MUST run as the normal desktop user so it can talk to the
+# user's notification daemon over their DBus session. When run under
+# sudo/root, it will often hang or fail to show any notifications
+# because it is not attached to the correct session bus.
+if os.geteuid() == 0:
+    msg = "Do not run test.py with sudo. Run it as your normal user in the desktop session."
+    print(msg)
+    logging.error("Refusing to run as root: %s", msg)
+    sys.exit(1)
+
 try:
     import gi
     gi.require_version("Notify", "0.7")
@@ -479,4 +489,14 @@ def main():
         logging.info("================ RUN %s END ==================", run_id)
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        # Graceful handling when the user presses Ctrl+C so we do not
+        # dump a noisy traceback from deep inside gi/Notify.
+        logging.info("Test interrupted by user (KeyboardInterrupt)")
+        try:
+            Notify.uninit()
+        except Exception:
+            pass
+        sys.exit(1)

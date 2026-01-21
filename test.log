@@ -1,0 +1,31 @@
+2026-01-21 20:49:17,110 - INFO - PyGObject (gi) imported successfully.
+2026-01-21 20:49:17,111 - INFO - ================ RUN 20260121-204917 START ================
+2026-01-21 20:49:17,111 - INFO - Python version: 3.14.2 (main, Dec  5 2025, 00:00:00) [GCC 15.2.1 20251111 (Red Hat 15.2.1-4)]
+2026-01-21 20:49:17,111 - INFO - ENV DISPLAY=:0 WAYLAND_DISPLAY=wayland-0 XDG_SESSION_TYPE=wayland
+2026-01-21 20:49:17,111 - INFO - User: fb, HOME=/home/fb, PWD=/home/fb/Dokument/GitHub/DNF-Automatic
+2026-01-21 20:49:17,111 - INFO - CHECKING: title='Checking for updates... (Test)' body='Refreshing repositories...' icon='emblem-synchronizing' timeout_ms=2000
+2026-01-21 20:49:19,127 - INFO - DOWNLOADING: total_pkgs=10 download_size='120 MiB' bar_len=20 step_delay=0.70s
+2026-01-21 20:49:26,959 - INFO - COMPLETE: title='✅ Downloads Complete! (Test)' body_preview='Downloaded 10 packages in 1m 23s.  Including: kernel, dnf, glibc, and more.  Ready to install.' icon='emblem-default' timeout_ms=4000
+2026-01-21 20:49:30,974 - INFO - UPDATES_READY: title='Updates Ready (Test)' body_preview="10 updates are pending. Click 'Install' to begin.  Including: kernel, dnf, glibc, and more." icon='system-software-update' script='/home/fb/.local/bin/dnf-run-install'
+2026-01-21 20:49:31,013 - INFO - Updates Ready notification sent. Waiting for user interaction...
+2026-01-21 20:49:34,212 - INFO - on_action: action_id='install' raw_user_data_script='/home/fb/.local/bin/dnf-run-install'
+2026-01-21 20:49:34,213 - INFO - on_action: executing script='/home/fb/.local/bin/dnf-run-install' exists=True executable=True
+2026-01-21 20:49:34,213 - INFO - on_action: launched helper script pid=70271 cmd=['/home/fb/.local/bin/dnf-run-install']
+2026-01-21 20:49:34,213 - INFO - Updates Ready stage finished (user interacted or closed notification)
+2026-01-21 20:49:34,213 - INFO - SOLVER_ERROR: title='Updates require your decision (Test)' body_preview="Background download of updates hit a DNF solver error.  Some packages may already be cached, but DNF needs your decision to continue.  Open a terminal and run:   sudo dnf upgrade or click 'Install Now" icon='system-software-update' script='/home/fb/.local/bin/dnf-run-install'
+2026-01-21 20:49:34,237 - INFO - Solver-error notification sent. Waiting for user interaction...
+2026-01-21 20:49:49,716 - INFO - on_action: action_id='install' raw_user_data_script='/home/fb/.local/bin/dnf-run-install'
+2026-01-21 20:49:49,716 - INFO - on_action: executing script='/home/fb/.local/bin/dnf-run-install' exists=True executable=True
+2026-01-21 20:49:49,717 - INFO - on_action: launched helper script pid=71183 cmd=['/home/fb/.local/bin/dnf-run-install']
+2026-01-21 20:49:49,717 - INFO - Solver-error test notification finished
+2026-01-21 20:49:49,717 - INFO - POLKIT_ERROR: title='Update check failed (Test)' body_preview="The updater could not authenticate with PolicyKit. This may be a configuration issue.  Try running 'pkexec dnf upgrade --assumeno' manually to test." icon='dialog-error' timeout_ms=30000
+2026-01-21 20:49:49,731 - INFO - PolicyKit-error notification sent (30s timeout)
+2026-01-21 20:49:52,732 - INFO - CONFIG_WARNING: title='DNF Auto-Helper config warnings (Test)' body_preview='Some settings in /etc/dnf-auto.conf were invalid and reset to safe defaults.  Check the install log or run: dnf-auto-helper --reset-config' icon='dialog-warning' timeout_ms=20000
+2026-01-21 20:49:52,744 - INFO - Config-warning notification sent (20s timeout)
+2026-01-21 20:49:54,744 - INFO - LOCK_RETRY: title='System management is locked (Test)' body_preview="Another update tool is currently using DNF.  Close the other updater (or wait for it to finish), then click 'Retry' to open the Ready-to-Install helper again." icon='dialog-warning' script='/home/fb/.local/bin/dnf-run-install'
+2026-01-21 20:49:54,764 - INFO - Lock-retry notification sent. Waiting for user interaction...
+2026-01-21 20:50:01,783 - INFO - on_action: action_id='retry-lock-test' raw_user_data_script=None
+2026-01-21 20:50:01,783 - INFO - lock-test: launching konsole with fake lock-retry script
+2026-01-21 20:50:01,784 - INFO - Lock-retry test notification finished
+2026-01-21 20:50:01,784 - INFO - Test finished.
+2026-01-21 20:50:01,784 - INFO - ================ RUN 20260121-204917 END ==================

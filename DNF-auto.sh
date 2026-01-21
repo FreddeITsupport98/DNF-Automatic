@@ -2991,14 +2991,29 @@ if [[ "$*" == *"dup"* ]] || [[ "$*" == *"dist-upgrade"* ]] || [[ "$*" == *"updat
     echo "Checking which services need to be restarted..."
     echo ""
     
-    # On Fedora, use 'needs-restarting' (from dnf-plugins-core) to show
-    # services and processes using old libraries, if available.
+    # On Fedora, use 'needs-restarting' to show services and processes using
+    # old libraries, if available. Prefer the standalone binary when present,
+    # but fall back to a dnf/dnf5 subcommand if the plugin is installed
+    # without a separate wrapper.
+    NEEDS_OUTPUT=""
     if command -v needs-restarting >/dev/null 2>&1; then
         NEEDS_OUTPUT=$(sudo needs-restarting 2>/dev/null || true)
         echo "$NEEDS_OUTPUT"
     else
-        NEEDS_OUTPUT=""
-        echo "'needs-restarting' not found. Install 'dnf-plugins-core' for detailed restart information."
+        # Try dnf5/dnf subcommand form: "dnf[5] needs-restarting".
+        DNF_NEEDS_BIN=""
+        if command -v dnf5 >/dev/null 2>&1; then
+            DNF_NEEDS_BIN="$(command -v dnf5)"
+        elif command -v dnf >/dev/null 2>&1; then
+            DNF_NEEDS_BIN="$(command -v dnf)"
+        fi
+
+        if [ -n "$DNF_NEEDS_BIN" ] && "$DNF_NEEDS_BIN" needs-restarting -h >/dev/null 2>&1; then
+            NEEDS_OUTPUT=$(sudo "$DNF_NEEDS_BIN" needs-restarting 2>/dev/null || true)
+            echo "$NEEDS_OUTPUT"
+        else
+            echo "'needs-restarting' not found. Install 'dnf-plugins-core' for detailed restart information."
+        fi
     fi
     
     # Check if there are any running processes that require restart
@@ -5290,11 +5305,22 @@ if [ -z "$DNF_CMD" ]; then
 fi
 
 NEEDS_RESTARTING_CMD="${NEEDS_RESTARTING_CMD:-}"
+NEEDS_RESTARTING_MODE="${NEEDS_RESTARTING_MODE:-}"
 if [ -z "$NEEDS_RESTARTING_CMD" ]; then
     if command -v needs-restarting >/dev/null 2>&1; then
         NEEDS_RESTARTING_CMD="$(command -v needs-restarting)"
+        NEEDS_RESTARTING_MODE="binary"
     else
-        NEEDS_RESTARTING_CMD=""
+        # Fallback: if the active DNF_CMD supports a 'needs-restarting'
+        # subcommand (as provided by newer dnf5 plugin stacks), use that
+        # instead of assuming the feature is missing.
+        if "$DNF_CMD" needs-restarting -h >/dev/null 2>&1; then
+            NEEDS_RESTARTING_CMD="$DNF_CMD"
+            NEEDS_RESTARTING_MODE="dnf-subcommand"
+        else
+            NEEDS_RESTARTING_CMD=""
+            NEEDS_RESTARTING_MODE=""
+        fi
     fi
 fi
 
@@ -5749,15 +5775,27 @@ log "RUN_UPDATE: starting pkexec ${DNF_CMD} upgrade with tolerant flags..."
     REBOOT_REQUIRED=0
     # On Fedora, prefer 'needs-restarting' to show services/processes using old libraries.
     if [ -n "$NEEDS_RESTARTING_CMD" ]; then
-        # First, check if a reboot is recommended.
-        "$NEEDS_RESTARTING_CMD" -r >/dev/null 2>&1
-        nr_rc=$?
-        if [ "$nr_rc" -eq 1 ]; then
-            REBOOT_REQUIRED=1
-        fi
+        if [ "${NEEDS_RESTARTING_MODE:-binary}" = "dnf-subcommand" ]; then
+            # First, check if a reboot is recommended via dnf subcommand.
+            "$NEEDS_RESTARTING_CMD" needs-restarting -r >/dev/null 2>&1
+            nr_rc=$?
+            if [ "$nr_rc" -eq 1 ]; then
+                REBOOT_REQUIRED=1
+            fi
 
-        NEEDS_OUTPUT=$(sudo "$NEEDS_RESTARTING_CMD" 2>/dev/null || true)
-        echo "$NEEDS_OUTPUT"
+            NEEDS_OUTPUT=$(sudo "$NEEDS_RESTARTING_CMD" needs-restarting 2>/dev/null || true)
+            echo "$NEEDS_OUTPUT"
+        else
+            # External needs-restarting binary
+            "$NEEDS_RESTARTING_CMD" -r >/dev/null 2>&1
+            nr_rc=$?
+            if [ "$nr_rc" -eq 1 ]; then
+                REBOOT_REQUIRED=1
+            fi
+
+            NEEDS_OUTPUT=$(sudo "$NEEDS_RESTARTING_CMD" 2>/dev/null || true)
+            echo "$NEEDS_OUTPUT"
+        fi
     else
         NEEDS_OUTPUT=""
         echo "'needs-restarting' not found. Install 'dnf-plugins-core' for detailed restart info."
