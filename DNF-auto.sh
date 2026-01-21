@@ -21,6 +21,27 @@ set -euo pipefail
 # are not world-readable unless we explicitly relax permissions.
 umask 077
 
+# Fast-path: if invoked as the installed helper (dnf-auto-helper) with an
+# unknown option-like first argument (starts with '-'), reject it immediately
+# before doing any logging, sanity checks, or installation work. This avoids
+# accidental full installs when the user mistypes a flag like '--bre' or
+# '-reset'.
+if [[ $# -gt 0 ]]; then
+    case "${1:-}" in
+        install|--help|-h|help|--verify|--repair|--diagnose|--check|--self-check|\
+        --soar|--brew|--pip-package|--pipx|--reset-config|--reset-downloads|--reset-state|\
+        --uninstall-dnf-helper|--uninstall-dnf)
+            # Known commands/options; continue into main logic
+            :
+            ;;
+        -*)
+            echo "Unknown option: $1"
+            echo "Run 'dnf-auto-helper --help' for usage."
+            exit 1
+            ;;
+    esac
+fi
+
 # --- Logging / Configuration Defaults ---
 LOG_DIR="/var/log/dnf-auto"
 LOG_FILE="${LOG_DIR}/install-$(date +%Y%m%d-%H%M%S).log"
@@ -1124,6 +1145,81 @@ update_status "SUCCESS: dnf-auto-helper configuration reset to defaults"
 echo "  sudo ./DNF-auto.sh install" | tee -a "${LOG_FILE}"
 }
 
+# --- Helper: Reset download/notifier state (CLI) ---
+run_reset_download_state_only() {
+    log_info ">>> Resetting dnf-auto-helper download/notifier state..."
+
+    echo "" | tee -a "${LOG_FILE}"
+    echo "==============================================" | tee -a "${LOG_FILE}"
+    echo "  dnf-auto-helper State Reset" | tee -a "${LOG_FILE}"
+    echo "==============================================" | tee -a "${LOG_FILE}"
+    echo "This will clear cached download status and notifier state files" | tee -a "${LOG_FILE}"
+    echo "without removing any services, timers, or configuration." | tee -a "${LOG_FILE}"
+    echo "" | tee -a "${LOG_FILE}"
+
+    update_status "Resetting download/notifier state..."
+
+    # 1. Root-level downloader state under /var/log/dnf-auto
+    if [ -d "${LOG_DIR}" ]; then
+        log_debug "Clearing root download state files under ${LOG_DIR}..."
+        rm -f "${LOG_DIR}/download-status.txt" \
+              "${LOG_DIR}/download-last-check.txt" \
+              "${LOG_DIR}/download-start-time.txt" \
+              "${LOG_DIR}/dry-run-last.txt" >> "${LOG_FILE}" 2>&1 || true
+    else
+        log_debug "Log directory ${LOG_DIR} does not exist; nothing to reset at root level"
+    fi
+
+    # 2. User-level notifier logs and caches
+    if [ -n "${SUDO_USER_HOME:-}" ]; then
+        USER_LOG_DIR="${SUDO_USER_HOME}/.local/share/dnf-notify"
+        USER_CACHE_DIR="${SUDO_USER_HOME}/.cache/dnf-notify"
+
+        log_debug "Clearing user notifier state under ${USER_LOG_DIR} and ${USER_CACHE_DIR}..."
+
+        mkdir -p "${USER_LOG_DIR}" "${USER_CACHE_DIR}" >> "${LOG_FILE}" 2>&1 || true
+
+        rm -f "${USER_LOG_DIR}/last-run-status.txt" \
+              "${USER_LOG_DIR}"/notifier*.log >> "${LOG_FILE}" 2>&1 || true
+
+        rm -f "${USER_CACHE_DIR}/last_notification.txt" \
+              "${USER_CACHE_DIR}/last_check.txt" \
+              "${USER_CACHE_DIR}/env_state.txt" >> "${LOG_FILE}" 2>&1 || true
+    fi
+
+    # 3. Reload and restart core systemd units so they pick up fresh state
+    log_debug "Reloading and restarting systemd units after state reset..."
+    systemctl daemon-reload >> "${LOG_FILE}" 2>&1 || true
+    systemctl reset-failed \
+        "${DL_SERVICE_NAME}.service" "${DL_SERVICE_NAME}.timer" \
+        "${VERIFY_SERVICE_NAME}.service" "${VERIFY_SERVICE_NAME}.timer" \
+        >> "${LOG_FILE}" 2>&1 || true
+    systemctl restart "${DL_SERVICE_NAME}.timer" >> "${LOG_FILE}" 2>&1 || true
+    systemctl restart "${VERIFY_SERVICE_NAME}.timer" >> "${LOG_FILE}" 2>&1 || true
+
+    if [ -n "${SUDO_USER:-}" ]; then
+        USER_BUS_PATH="unix:path=/run/user/$(id -u "${SUDO_USER}")/bus"
+        sudo -u "${SUDO_USER}" DBUS_SESSION_BUS_ADDRESS="${USER_BUS_PATH}" \
+            systemctl --user daemon-reload >> "${LOG_FILE}" 2>&1 || true
+        sudo -u "${SUDO_USER}" DBUS_SESSION_BUS_ADDRESS="${USER_BUS_PATH}" \
+            systemctl --user reset-failed \
+                "${NT_SERVICE_NAME}.service" "${NT_SERVICE_NAME}.timer" \
+                >> "${LOG_FILE}" 2>&1 || true
+        sudo -u "${SUDO_USER}" DBUS_SESSION_BUS_ADDRESS="${USER_BUS_PATH}" \
+            systemctl --user restart "${NT_SERVICE_NAME}.timer" \
+            >> "${LOG_FILE}" 2>&1 || true
+    fi
+
+    log_success "Download/notifier state reset completed"
+    update_status "SUCCESS: Download/notifier state reset"
+
+    echo "" | tee -a "${LOG_FILE}"
+    echo "State reset summary:" | tee -a "${LOG_FILE}"
+    echo "  - Cleared /var/log/dnf-auto/download-*.txt and dry-run-last.txt" | tee -a "${LOG_FILE}"
+    echo "  - Cleared user notifier logs and cached notification state" | tee -a "${LOG_FILE}"
+    echo "  - Reloaded and restarted core timers/services" | tee -a "${LOG_FILE}"
+}
+
 # --- Helper: Soar-only installation mode (CLI) ---
 run_soar_install_only() {
     log_info ">>> Soar installation helper mode..."
@@ -1569,17 +1665,21 @@ if [[ "${1:-}" == "--help" || "${1:-}" == "-h" || "${1:-}" == "help" \
     echo "   or: sudo $0 [COMMAND]  # when running the script directly without the shell alias"
     echo ""
     echo "Commands:"
-    echo "  install           Install or update the DNF auto-updater system (default)"
-    echo "  --verify          Run verification and auto-repair checks"
-    echo "  --repair          Same as --verify (alias)"
-    echo "  --diagnose        Same as --verify (alias)"
-    echo "  --check           Run syntax checks only"
-    echo "  --self-check      Same as --check (alias)"
-    echo "  --soar            Install/upgrade optional Soar CLI helper for the user"
-    echo "  --brew            Install/upgrade Homebrew (brew) for the user"
-    echo "  --pip-package     Install/upgrade pipx and show how to manage Python CLI tools with pipx"
-     echo "  --reset-config    Reset /etc/dnf-auto.conf to documented defaults (with backup)"
-     echo "  --help            Show this help message"
+    echo "  install                 Install or update the DNF auto-updater system (default)"
+    echo "  --verify                Run verification and auto-repair checks"
+    echo "  --repair                Same as --verify (alias)"
+    echo "  --diagnose              Same as --verify (alias)"
+    echo "  --check                 Run syntax checks only"
+    echo "  --self-check            Same as --check (alias)"
+    echo "  --soar                  Install/upgrade optional Soar CLI helper for the user"
+    echo "  --brew                  Install/upgrade Homebrew (brew) for the user"
+    echo "  --pip-package           Install/upgrade pipx and show how to manage Python CLI tools with pipx"
+    echo "  --reset-config          Reset /etc/dnf-auto.conf to documented defaults (with backup)"
+    echo "  --reset-downloads       Clear cached download/notifier state and restart timers (alias: --reset-state)"
+    echo "  --reset-state           Alias for --reset-downloads"
+    echo "  --uninstall-dnf-helper  Remove dnf-auto-helper services, timers, logs, and user scripts (alias: --uninstall-dnf)"
+    echo "  --uninstall-dnf         Alias for --uninstall-dnf-helper"
+    echo "  --help                  Show this help message"
     echo ""
     echo "Examples:"
     echo "  dnf-auto-helper install         # Full installation (via shell alias, runs with sudo)"
@@ -1607,7 +1707,7 @@ if [[ "${1:-}" == "--self-check" || "${1:-}" == "--check" ]]; then
     exit 0
 fi
 
-# Optional modes: Soar, Homebrew, pipx, and uninstall helper-only
+# Optional modes: Soar, Homebrew, pipx, reset-state, and uninstall helper-only
 if [[ "${1:-}" == "--soar" ]]; then
     log_info "Soar helper-only mode requested"
     run_soar_install_only
@@ -1623,6 +1723,40 @@ elif [[ "${1:-}" == "--pip-package" || "${1:-}" == "--pipx" ]]; then
 elif [[ "${1:-}" == "--reset-config" ]]; then
     log_info "Config reset mode requested"
     run_reset_config_only
+    exit $?
+elif [[ "${1:-}" == "--reset-downloads" || "${1:-}" == "--reset-state" ]]; then
+    log_info "Download/notifier state reset mode requested"
+    run_reset_download_state_only
+    exit $?
+elif [[ "${1:-}" == "--uninstall-dnf-helper" || "${1:-}" == "--uninstall-dnf" ]]; then
+    shift
+    # Parse optional flags for the uninstaller:
+    #   --yes / -y / --non-interactive : skip confirmation prompt
+    #   --dry-run                      : show what would be removed, no changes
+    #   --keep-logs                    : do not delete any log files under $LOG_DIR
+    UNINSTALL_ASSUME_YES=0
+    UNINSTALL_DRY_RUN=0
+    UNINSTALL_KEEP_LOGS=0
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --yes|-y|--non-interactive)
+                UNINSTALL_ASSUME_YES=1
+                ;;
+            --dry-run)
+                UNINSTALL_DRY_RUN=1
+                ;;
+            --keep-logs)
+                UNINSTALL_KEEP_LOGS=1
+                ;;
+            *)
+                log_error "Unknown option for --uninstall-dnf-helper: $1"
+                exit 1
+                ;;
+        esac
+        shift
+    done
+    log_info "Uninstall dnf-auto-helper mode requested"
+    run_uninstall_helper_only
     exit $?
 fi
 
@@ -1696,6 +1830,34 @@ if [ "${VERIFICATION_ONLY_MODE:-0}" -eq 1 ]; then
     rc=$?
     set -e
     exit $rc
+fi
+
+# If we reach this point, all supported option-like commands (e.g.
+# --verify, --reset-config, --reset-downloads, --uninstall-dnf-helper,
+# etc.) have already been handled and exited above.
+#
+# 1) Reject any unknown *option* that starts with '-' so a typo like
+#    '-reset' does NOT silently fall back to a full installation.
+if [[ $# -gt 0 && "${1:-}" == -* ]]; then
+    log_error "Unknown option: $1"
+    echo "Run 'dnf-auto-helper --help' for usage." | tee -a "${LOG_FILE}"
+    exit 1
+fi
+
+# 2) Handle positional commands. We only support an optional leading
+#    'install' subcommand; anything else like 'instal' or 'foo' should
+#    be treated as a command-not-found style error instead of starting
+#    a full install.
+if [[ $# -gt 0 ]]; then
+    if [[ "${1:-}" == "install" ]]; then
+        # Explicit 'install' subcommand: drop it and continue with the
+        # normal installation flow.
+        shift
+    else
+        log_error "Unknown command: $1"
+        echo "Command '$1' not found. Try 'dnf-auto-helper -h' or '--help'." | tee -a "${LOG_FILE}"
+        exit 1
+    fi
 fi
 
 # --- 2b. Dependency Checks ---
@@ -2105,10 +2267,23 @@ if ! /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 "$DNF_CMD" -q upgrade --assume
     # and exit 0 so we do not need to set an additional error state.
     handle_lock_or_fail "$DRY_ERR"
 
-    # At this point we know the error was not a simple lock. Before we
-    # surface an error to the user, try the same lightweight auto-repair
-    # used for metadata refresh: clean stale repo metadata once and retry
-    # the preview.
+    # If the transaction was explicitly aborted by the user (for example
+    # because systemd stopped this service when an interactive upgrade was
+    # triggered), treat it as a cancelled run instead of a persistent
+    # solver error. This prevents a stale error:solver:preview state once
+    # the user has resolved the situation interactively.
+    if grep -qiE 'Operation aborted by user|Operation avbröts av användaren' "$DRY_ERR"; then
+        echo "idle" > "$STATUS_FILE"
+        echo "[SUMMARY] stage=preview classification=cancelled-by-user" >&2
+        cat "$DRY_ERR" >&2 || true
+        rm -f "$DRY_ERR" "$DRY_OUTPUT"
+        exit 0
+    fi
+
+    # At this point we know the error was not a simple lock or a deliberate
+    # user abort. Before we surface an error to the user, try the same
+    # lightweight auto-repair used for metadata refresh: clean stale repo
+    # metadata once and retry the preview.
     if grep -qiE 'Failed to synchronize cache|Failed to download metadata|repomd\\.xml' "$DRY_ERR"; then
         "$DNF_CMD" clean metadata >/dev/null 2>&1 || true
 
@@ -5299,6 +5474,18 @@ log "RUN_UPDATE: starting pkexec ${DNF_CMD} upgrade with tolerant flags..."
             log "RUN_UPDATE: pkexec dnf upgrade FAILED (rc=$rc)"
         fi
     fi
+
+    # If the system upgrade completed successfully, reset the background
+    # downloader status file so any previous solver/preview error from the
+    # root downloader does not linger after the conflict has been resolved
+    # interactively. We ignore failures here so a missing directory or
+    # PolicyKit denial cannot break the helper.
+    if [ "$UPDATE_SUCCESS" = true ]; then
+        log "RUN_UPDATE: resetting /var/log/dnf-auto/download-status.txt to 'idle' after successful upgrade"
+        set +e
+        pkexec /usr/bin/bash -lc "mkdir -p /var/log/dnf-auto && echo 'idle' > /var/log/dnf-auto/download-status.txt" >/dev/null 2>&1
+        set -e
+    fi
     
     echo ""
     echo "=========================================="
@@ -6201,9 +6388,16 @@ fi
 # --- 14. Installation Verification (called during install) ---
 if [ "${VERIFICATION_ONLY_MODE:-0}" -ne 1 ]; then
     # Only run verification during installation, not in verify-only mode
-    # (verify-only mode calls the function directly and exits)
+    # (verify-only mode calls the function directly and exits).
+    #
+    # IMPORTANT: run_verification_only may return a non-zero status when
+    # problems are detected, but that should NOT cause the main
+    # installer to exit with an error. Instead we treat verification
+    # failures as a soft warning and surface them in the logs.
+    set +e
     run_verification_only
     VERIFICATION_EXIT_CODE=$?
+    set -e
 else
     # Should never reach here - verify mode exits earlier
     VERIFICATION_EXIT_CODE=0
