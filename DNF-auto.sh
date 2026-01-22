@@ -21,6 +21,25 @@ set -euo pipefail
 # are not world-readable unless we explicitly relax permissions.
 umask 077
 
+# --- Distro / package-manager guard ---
+# This installer is only intended for Fedora (and Fedora-like) systems
+# that use the dnf package manager. Bail out early on unsupported distros.
+if ! command -v dnf >/dev/null 2>&1 && ! command -v dnf5 >/dev/null 2>&1; then
+    echo "[dnf-auto-helper] This installer requires the 'dnf' (or 'dnf5') package manager and is intended for Fedora-based systems only." >&2
+    echo "[dnf-auto-helper] No compatible package manager detected; aborting." >&2
+    exit 1
+fi
+
+if [ -r /etc/os-release ]; then
+    . /etc/os-release
+    # Require Fedora or a Fedora-like derivative (ID=fedora or ID_LIKE including 'fedora').
+    if [ "${ID:-}" != "fedora" ] && ! printf '%s\n' "${ID_LIKE:-}" | grep -qi 'fedora'; then
+        echo "[dnf-auto-helper] This does not appear to be a Fedora-based system (ID=${ID:-unknown})." >&2
+        echo "[dnf-auto-helper] This installer is only supported on Fedora; aborting." >&2
+        exit 1
+    fi
+fi
+
 # Fast-path: if invoked as the installed helper (dnf-auto-helper) with an
 # unknown option-like first argument (starts with '-'), reject it immediately
 # before doing any logging, sanity checks, or installation work. This avoids
