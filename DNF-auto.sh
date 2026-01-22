@@ -302,6 +302,21 @@ LOCK_RETRY_INITIAL_DELAY_SECONDS=1
 # Valid values: true / false (case-sensitive). Default: true.
 LOCK_REMINDER_ENABLED=true
 
+# DISABLE_PACKAGEKIT_SERVICES
+# When "true" (default), the installer disables common PackageKit-based
+# background services so they do not fight DNF for the RPM lock or hide
+# updates from this helper.
+# When "false", the installer leaves PackageKit services alone.
+DISABLE_PACKAGEKIT_SERVICES=true
+
+# REMOVE_PACKAGEKIT_PACKAGES
+# When "true", the installer will also attempt to remove the PackageKit
+# daemon package (PackageKit) so that it cannot be activated again in the
+# background. This is an aggressive option and may disable integration with
+# GNOME Software / Discover or other GUI updaters.
+# Default is false: we only stop/disable the services, not uninstall them.
+REMOVE_PACKAGEKIT_PACKAGES=false
+
 # NO_UPDATES_REMINDER_REPEAT_ENABLED
 # When "true", the notifier may re-show identical "No updates found" messages
 # on subsequent checks while the system remains fully up to date.
@@ -481,6 +496,8 @@ EOF
     validate_interval NT_TIMER_INTERVAL_MINUTES 1
     validate_interval VERIFY_TIMER_INTERVAL_MINUTES 60
     validate_bool_flag VERIFY_NOTIFY_USER_ENABLED true
+    validate_bool_flag DISABLE_PACKAGEKIT_SERVICES true
+    validate_bool_flag REMOVE_PACKAGEKIT_PACKAGES false
     # Default: allow last-resort auto-upgrade repair unless explicitly disabled
     validate_bool_flag AUTO_REPAIR_UPGRADE_ENABLED true
     # Default: keep GPG checks enabled unless explicitly disabled
@@ -527,6 +544,8 @@ EOF
     _mark_missing_key "LOCK_RETRY_INITIAL_DELAY_SECONDS"
     _mark_missing_key "DOWNLOADER_DOWNLOAD_MODE"
     _mark_missing_key "LOCK_REMINDER_ENABLED"
+    _mark_missing_key "DISABLE_PACKAGEKIT_SERVICES"
+    _mark_missing_key "REMOVE_PACKAGEKIT_PACKAGES"
     _mark_missing_key "NO_UPDATES_REMINDER_REPEAT_ENABLED"
     _mark_missing_key "UPDATES_READY_REMINDER_REPEAT_ENABLED"
 
@@ -577,6 +596,12 @@ EOF
                     ;;
                 DOWNLOADER_DOWNLOAD_MODE)
                     DOWNLOADER_DOWNLOAD_MODE="full"
+                    ;;
+                DISABLE_PACKAGEKIT_SERVICES)
+                    DISABLE_PACKAGEKIT_SERVICES=true
+                    ;;
+                REMOVE_PACKAGEKIT_PACKAGES)
+                    REMOVE_PACKAGEKIT_PACKAGES=false
                     ;;
             esac
         done
@@ -1944,16 +1969,36 @@ EOF
     log_success "logrotate configuration installed at ${LOGROTATE_CONF}"
 fi
 
-# --- 3b. Disable conflicting background updaters (PackageKit) ---
+# --- 3b. Disable (and optionally remove) conflicting PackageKit updaters ---
 # To avoid constant DNF lock contention, proactively disable common
-# PackageKit-based background services. This leaves interactive GUI
-# tools installable, but stops them from automatically grabbing the
-# system management lock behind the scenes.
-log_info ">>> Disabling PackageKit background services to avoid DNF lock conflicts..."
-update_status "Disabling PackageKit background services..."
-systemctl disable --now packagekit.service packagekit-offline-update.service packagekit-background.service \
-    >> "${LOG_FILE}" 2>&1 || true
-log_success "PackageKit background services disabled (or not present)"
+# PackageKit-based background services. When configured via
+# REMOVE_PACKAGEKIT_PACKAGES=true, we also attempt to uninstall the
+# PackageKit package entirely so it cannot be reactivated.
+if [[ "${DISABLE_PACKAGEKIT_SERVICES,,}" == "true" ]]; then
+    log_info ">>> Disabling PackageKit background services to avoid DNF lock conflicts..."
+    update_status "Disabling PackageKit background services..."
+    systemctl disable --now packagekit.service packagekit-offline-update.service packagekit-background.service \
+        >> "${LOG_FILE}" 2>&1 || true
+    # Also stop any currently running packagekitd process so it releases locks
+    if pgrep -x packagekitd >/dev/null 2>&1; then
+        log_info "Stopping running packagekitd daemon to release RPM/DNF locks..."
+        pkill -TERM packagekitd >> "${LOG_FILE}" 2>&1 || true
+        sleep 1
+    fi
+    log_success "PackageKit background services disabled (or not present)"
+
+    if [[ "${REMOVE_PACKAGEKIT_PACKAGES,,}" == "true" ]]; then
+        log_info ">>> Removing PackageKit packages to eliminate interference (advanced option)..."
+        # Best-effort removal; if this fails we log a warning but continue.
+        if dnf -y remove PackageKit >> "${LOG_FILE}" 2>&1; then
+            log_success "PackageKit package removed successfully"
+        else
+            log_error "Failed to remove PackageKit package; it may not be installed or has dependencies."
+        fi
+    fi
+else
+    log_info "Skipping PackageKit service disable (DISABLE_PACKAGEKIT_SERVICES=false in ${CONFIG_FILE})"
+fi
 
 # --- 5. Create/Update DOWNLOADER (Root Service) ---
 log_info ">>> Creating (root) downloader service: ${DL_SERVICE_FILE}"
