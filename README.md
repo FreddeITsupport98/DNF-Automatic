@@ -410,45 +410,6 @@ The log includes:
   tracebacks for any failures.
 
 
-| File | Purpose | What It Contains |
-|------|---------|------------------|
-| `install-YYYYMMDD-HHMMSS.log` | Installation logs | Complete log of each installation run with timestamps, all commands executed, and their results |
-| `last-status.txt` | Current status | The most recent status message (e.g., "SUCCESS: Installation completed") |
-| `service-logs/downloader.log` | Downloader output | Output from the background download service (`zypper refresh` and `zypper dup --download-only`) |
-| `service-logs/downloader-error.log` | Downloader errors | Error output from the downloader service |
-
-#### User Logs (Notifier Service)
-**Location:** `~/.local/share/zypper-notify/`
-
-| File | Purpose | What It Contains |
-|------|---------|------------------|
-| `notifier-detailed.log` | Complete notifier activity | All notifier operations: environment checks, safety decisions, update checks, errors with full tracebacks |
-| `notifier-detailed.log.old` | Previous log backup | Previous log file (created when main log exceeds 5MB) |
-| `last-run-status.txt` | Last run status | Status of the most recent notifier run (e.g., "Updates available: Snapshot 20251110-0 Ready") |
-| `notifier.log` | Systemd stdout | Standard output captured by systemd |
-| `notifier-error.log` | Systemd stderr | Standard error captured by systemd |
-
-### What Gets Logged
-
-#### Installation Phase
-- ✅ Sanity checks (root privileges, user detection)
-- ✅ Dependency verification and installation
-- ✅ Old service cleanup
-- ✅ Service/timer creation
-- ✅ File permissions and ownership
-- ✅ Syntax validation
-- ✅ Final status summary
-
-#### Runtime (Notifier Service)
-- ✅ **Environment Detection:** Form factor (laptop/desktop), battery status, AC power state
-- ✅ **Safety Checks:** Why updates are allowed or skipped (battery, metered connection, etc.)
-- ✅ **Update Checks:** When zypper runs, what it finds, how many packages
-- ✅ **Notifications:** What notifications are shown to the user
-- ✅ **User Actions:** When the Install button is clicked
-- ✅ **Errors:** Full error messages with Python tracebacks for debugging
-
-### How to Access Logs
-
 #### View Current Status (No Commands Needed)
 ```bash
 # System/installation status
@@ -607,7 +568,6 @@ systemctl status zypper-autodownload.service
 - Check for metered connection: `grep "metered" ~/.local/share/zypper-notify/notifier-detailed.log`
 - The system is working as designed - updates only run on AC power and unmetered connections
 
-### Version History
 
 - **v61** (2026-01-09): **pipx Integration, Reminder Controls & Smarter Download Completion**
   - 🐍 **NEW: pipx helper and automatic upgrades** – added a dedicated `zypper-auto-helper --pip-package` (alias: `--pipx`) mode that installs `python313-pipx` via zypper (on request), runs `pipx ensurepath`, and can optionally run `pipx upgrade-all` for the target user. This makes pipx the recommended/default way to manage Python command‑line tools like `yt-dlp`, `black`, `ansible`, and `httpie`.
@@ -680,94 +640,6 @@ systemctl status zypper-autodownload.service
 - **v42**: PolicyKit/PAM error logging enhancements
 - Earlier versions: Initial development and refinements
 
------
-
-## 🗑️ Uninstallation
-
-### Recommended: Scripted Uninstaller (v58+)
-
-Use the built-in uninstaller to safely remove all helper components:
-
-```bash
-# Run from the directory containing zypper-auto.sh (as root)
-sudo ./zypper-auto.sh --uninstall-zypper-helper
-
-# Or using the installed helper command (typically without sudo via shell alias)
-zypper-auto-helper --uninstall-zypper-helper
-# Shorthand alias:
-zypper-auto-helper --uninstall-zypper
-```
-
-By default this will:
-- Stop and disable the root timers/services (`zypper-autodownload`, `zypper-cache-cleanup`, `zypper-auto-verify`)
-- Stop and disable the user notifier timer/service for your user
-- Remove all helper systemd unit files and helper binaries
-- Remove user helper scripts, shell aliases, and Fish config snippets
-- Clear notifier caches and (by default) old helper logs under `/var/log/zypper-auto`
-- Reload both system and user systemd daemons and clear any "failed" states
-
-#### Advanced Uninstall Flags
-
-You can customise the behaviour with optional flags:
-
-```bash
-# Skip the confirmation prompt (non-interactive)
-sudo ./zypper-auto.sh --uninstall-zypper-helper --yes
-# or
-sudo ./zypper-auto.sh --uninstall-zypper-helper --non-interactive
-
-# Show what WOULD be removed, but make no changes
-sudo ./zypper-auto.sh --uninstall-zypper-helper --dry-run
-
-# Keep logs under /var/log/zypper-auto for debugging
-sudo ./zypper-auto.sh --uninstall-zypper-helper --yes --keep-logs
-
-# Flags can be combined as needed
-sudo ./zypper-auto.sh --uninstall-zypper-helper --dry-run --keep-logs
-```
-
-### Manual Uninstall (Advanced / Legacy)
-
-If you prefer or need to remove components manually, the equivalent steps are:
-
-```bash
-# 1. Stop and disable the root timers
-sudo systemctl disable --now zypper-autodownload.timer
-sudo systemctl disable --now zypper-cache-cleanup.timer
-sudo systemctl disable --now zypper-auto-verify.timer
-
-# 2. Stop and disable the user timer (run as regular user)
-systemctl --user disable --now zypper-notify-user.timer
-
-# 3. Remove all systemd files and scripts
-sudo rm /etc/systemd/system/zypper-autodownload.service
-sudo rm /etc/systemd/system/zypper-autodownload.timer
-sudo rm /etc/systemd/system/zypper-cache-cleanup.service
-sudo rm /etc/systemd/system/zypper-cache-cleanup.timer
-sudo rm /etc/systemd/system/zypper-auto-verify.service
-sudo rm /etc/systemd/system/zypper-auto-verify.timer
-sudo rm /usr/local/bin/zypper-download-with-progress
-sudo rm /usr/local/bin/zypper-auto-helper
-
-# Replace $HOME with your actual home directory (or run as regular user)
-rm -f $HOME/.config/systemd/user/zypper-notify-user.service
-rm -f $HOME/.config/systemd/user/zypper-notify-user.timer
-rm -f $HOME/.local/bin/zypper-notify-updater.py
-rm -f $HOME/.local/bin/zypper-run-install
-rm -f $HOME/.local/bin/zypper-with-ps
-rm -f $HOME/.local/bin/zypper-view-changes
-rm -f $HOME/.config/fish/conf.d/zypper-wrapper.fish
-rm -f $HOME/.config/fish/conf.d/zypper-auto-helper-alias.fish
-
-# Remove shell aliases from config files
-sed -i '/# Zypper wrapper for auto service check/d' $HOME/.bashrc $HOME/.zshrc 2>/dev/null
-sed -i '/alias zypper=/d' $HOME/.bashrc $HOME/.zshrc 2>/dev/null
-sed -i '/# zypper-auto-helper command alias/d' $HOME/.bashrc $HOME/.zshrc 2>/dev/null
-sed -i '/alias zypper-auto-helper=/d' $HOME/.bashrc $HOME/.zshrc 2>/dev/null
-
-# 4. (Optional) Remove logs
-sudo rm -rf /var/log/zypper-auto
-rm -rf $HOME/.local/share/zypper-notify
 rm -rf $HOME/.cache/zypper-notify
 
 # 5. Reload the systemd daemons
