@@ -89,8 +89,7 @@ By default it runs a full `dnf upgrade --downloadonly` in the background (config
   - All values are validated; invalid values fall back to safe defaults and are logged.
 
 - **Scripted uninstaller:**
-  - `dnf-auto-helper --uninstall-zypper-helper` (retained to clean old *zypper* helper installations) removes the legacy zypper‑auto‑helper services/scripts/logs without touching DNF or Fedora configuration.
-  - DNF‑auto‑helper’s own components are also removable via the same uninstaller logic.
+  - `dnf-auto-helper --uninstall-dnf-helper` (alias: `--uninstall-dnf`) removes all dnf-auto-helper timers, services, helper binaries, user scripts, logs, and caches while leaving DNF itself and Fedora configuration untouched.
 
 - **Extensive logging:**
   - Installation logs and status under `/var/log/dnf-auto/`.
@@ -302,10 +301,10 @@ The helper includes a scripted uninstaller designed to **clean up helper compone
 
 ```bash
 # From the directory containing DNF-auto.sh
-sudo ./DNF-auto.sh --uninstall   # removes DNF helper units, scripts, logs, and aliases
+sudo ./DNF-auto.sh --uninstall-dnf-helper   # alias: --uninstall-dnf
 
 # Or via the installed CLI
-dnf-auto-helper --uninstall
+dnf-auto-helper --uninstall-dnf-helper      # alias: --uninstall-dnf
 ```
 
 Typical effects:
@@ -410,13 +409,6 @@ The log includes:
   is executable, PID of any launched helper/terminal process, and full
   tracebacks for any failures.
 
-
-Version 47 introduces comprehensive logging to help you understand what's happening without needing to run commands.
-
-### Log Locations
-
-#### System Logs (Root Services)
-**Location:** `/var/log/zypper-auto/`
 
 | File | Purpose | What It Contains |
 |------|---------|------------------|
