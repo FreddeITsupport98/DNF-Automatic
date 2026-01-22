@@ -1,5 +1,7 @@
 # DNF Auto-Downloader for Fedora
 
+![Guide to installing DNF Automatic on Fedora Linux](icon/guide-to-install-dnf-automatic-on-fedora-linux.webp)
+
 A robust `systemd` architecture that automates background **DNF upgrade downloads**, provides persistent, battery‑safe **user notifications**, and cleanly installs, verifies, and uninstalls itself.
 
 It is built and tested for Fedora with `dnf`/`dnf5`.
@@ -361,13 +363,10 @@ If you still have any old `zypper-auto-*` files from earlier experiments, you ca
 
 ## 👩‍💻 Developer / Contributor Testing
 
-This repository includes two small helpers designed to make reproducing and
-debugging behaviour easier for contributors:
+### Notification UI Test Harness (`test.py`)
 
-### 1. Notification UI Test Harness (`test.py`)
-
-Located in the repo root, `test.py` exercises the full notification flow
-without touching systemd units or zypper itself:
+Located in the repo root, `test.py` exercises the full DNF notification flow
+without touching your real systemd units or running actual `dnf upgrade`.
 
 ```bash
 python3 test.py
@@ -379,25 +378,26 @@ What it does:
   - "Checking for updates…"
   - "Downloading updates…" with a progress bar
   - "✅ Downloads Complete!" summary
-  - Persistent "Snapshot XXXXXXXX Ready" notification with **Install**,
+  - A persistent **Updates Ready** notification with **Install**,
     **View Changes**, and **Snooze 1h/4h/1d** buttons.
-- Simulates the main **error/edge-case** notifications:
+- Simulates the main **error/edge‑case** notifications:
   - Solver/interaction error ("Updates require your decision") with an
     **Install Now** action.
   - PolicyKit/authentication failure ("Update check failed").
-  - Config warning ("zypper-auto-helper config warnings – run
-    `zypper-auto-helper --reset-config`").
+  - Config warning ("DNF Auto-Helper config warnings – run
+    `dnf-auto-helper --reset-config`").
+  - DNF lock situations with a dedicated lock‑retry test action.
 - Uses the same `on_action` callback shape as the real notifier so that
-  clicking **Install** attempts to run `~/.local/bin/zypper-run-install` or,
+  clicking **Install** attempts to run `~/.local/bin/dnf-run-install` or,
   if missing, falls back to opening `konsole`.
 
 All activity is logged to `test.log` in the repo root (ignored by Git). Each
 run is wrapped in clear markers:
 
 ```text
-================ RUN 20260105-212612 START ================
+================ RUN YYYYMMDD-HHMMSS START ================
 ...
-================ RUN 20260105-212612 END ==================
+================ RUN YYYYMMDD-HHMMSS END ==================
 ```
 
 The log includes:
@@ -410,64 +410,6 @@ The log includes:
   is executable, PID of any launched helper/terminal process, and full
   tracebacks for any failures.
 
-### 2. Integration Test Script (`integration-test.sh`)
-
-Also in the repo root, `integration-test.sh` performs a higher-level
-integration test of the installed helper, timers and configuration.
-
-> **Important:** This script is **non-destructive** with respect to your
-> persistent configuration. It temporarily tweaks `/etc/zypper-auto.conf` to
-> inject a known-bad value, but always restores your original config before
-> exiting (even if a later step fails).
-
-Run it as root:
-
-```bash
-cd /path/to/zypper-automatik-helper-
-sudo ./integration-test.sh
-```
-
-What it checks:
-
-- Presence and executability of core components:
-  - `/usr/local/bin/zypper-auto-helper`
-  - `/usr/local/bin/zypper-download-with-progress`
-  - User scripts such as `~/.local/bin/zypper-notify-updater.py`,
-    `~/.local/bin/zypper-run-install`, `~/.local/bin/zypper-with-ps` (if
-    installed for the primary user).
-- Root/systemd units:
-  - `zypper-autodownload.timer` / `zypper-autodownload.service` (enabled/active).
-  - `zypper-cache-cleanup.timer` / `zypper-cache-cleanup.service`.
-- User systemd units (for the primary non-root user, when detectable):
-  - `zypper-notify-user.timer` (enabled/active).
-- CLI health:
-  - `zypper-auto-helper --check` (syntax/self-check).
-  - `zypper-auto-helper --verify` (12‑point verification and auto‑repair).
-
-Config validation test:
-
-- Ensures `/etc/zypper-auto.conf` exists (running `zypper-auto-helper install`
-  if needed).
-- Backs it up to a timestamped file such as
-  `/etc/zypper-auto.conf.integration-backup-YYYYMMDD-HHMMSS`.
-- Rewrites `DOWNLOADER_DOWNLOAD_MODE` to an intentionally invalid value
-  (`"INVALID-MODE"`).
-- Runs a full `zypper-auto-helper install` to force `load_config` and
-  `CONFIG_WARNINGS` to execute.
-- Locates the newest `install-*.log` in `/var/log/zypper-auto/` and verifies
-  that:
-  - An `Invalid DOWNLOADER_DOWNLOAD_MODE=...` line appears.
-  - An aggregate warning about one or more invalid settings in
-    `/etc/zypper-auto.conf` was recorded.
-- Restores the original `/etc/zypper-auto.conf` from the backup and runs a
-  final `zypper-auto-helper --check` to confirm the restored config is healthy.
-
-The integration script writes a concise, timestamped console log and is safe to
-run repeatedly on development systems.
-
------
-
-## 📊 Logging & Monitoring (v47)
 
 Version 47 introduces comprehensive logging to help you understand what's happening without needing to run commands.
 
