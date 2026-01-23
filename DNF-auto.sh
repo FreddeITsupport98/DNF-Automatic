@@ -4621,8 +4621,12 @@ def parse_output(output: str, include_preview: bool = True):
         log_info("No updates found in dnf output")
         return None, None, None, 0
 
-    # Count Packages from DNF summary line, e.g. "Upgrade  5 Packages"
+    # Count packages from DNF/DNF5 summary lines.
+    # Older DNF prints e.g.: "Upgrade  5 Packages"
+    # Newer dnf5 prints e.g.: "Upgrading:         53 packages"
     count_match = re.search(r"Upgrade\s+(\d+)\s+Packages?", output, re.IGNORECASE)
+    if not count_match:
+        count_match = re.search(r"Upgrading:\s+(\d+)\s+packages?", output, re.IGNORECASE)
     package_count = int(count_match.group(1)) if count_match else 0
     
     # If no packages found or count is 0, return None
