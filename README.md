@@ -32,7 +32,7 @@ On Fedora, updates can be frequent and large. The slow part is usually **downloa
 
 This helper automates the slow part: it runs a background **DNF downloader** on a schedule so that, when you choose to upgrade, most or all packages are already in the cache. A "10‑minute" update becomes roughly "1 minute of authenticated install".
 
-By default it runs a full `dnf upgrade --downloadonly` in the background (configurable), but only after passing several safety checks.
+By default it runs a full `dnf update --downloadonly` in the background (configurable), but only after passing several safety checks.
 
 -----
 
@@ -47,7 +47,7 @@ By default it runs a full `dnf upgrade --downloadonly` in the background (config
   - Root systemd service + timer:
     - `dnf-autodownload.service`
     - `dnf-autodownload.timer`
-  - Runs a controlled `dnf upgrade --downloadonly` pass using settings from `/etc/dnf-auto.conf`.
+  - Runs a controlled `dnf update --downloadonly` pass using settings from `/etc/dnf-auto.conf`.
   - Writes machine‑readable status to `/var/log/dnf-auto/download-status.txt` (e.g. `refreshing`, `downloading:…`, `complete:…`, `idle`).
   - Default behaviour is **`DOWNLOADER_DOWNLOAD_MODE=full`** so packages are cached ahead of time. You can switch to `detect-only` if you only want notifications.
 
@@ -224,7 +224,7 @@ Some important options (names match what `DNF-auto.sh` expects):
 
 - **Downloader behaviour and DNF flags**
   - `DOWNLOADER_DOWNLOAD_MODE` (case‑sensitive):
-    - `full` (default) – run a full `dnf upgrade --downloadonly` and cache packages.
+    - `full` (default) – run a full `dnf update --downloadonly` and cache packages.
     - `detect-only` – only run a non‑interactive preview; no pre‑download.
   - `DUP_EXTRA_FLAGS` – extra flags appended to every DNF call made by the helper
     (both downloader and notifier). Useful for things like `--refresh` or repo
