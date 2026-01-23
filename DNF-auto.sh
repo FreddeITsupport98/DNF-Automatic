@@ -49,7 +49,7 @@ if [[ $# -gt 0 ]]; then
     case "${1:-}" in
         install|--help|-h|help|--verify|--repair|--diagnose|--check|--self-check|\
         --soar|--brew|--pip-package|--pipx|--reset-config|--reset-downloads|--reset-state|\
-        --uninstall-dnf-helper|--uninstall-dnf)
+        --uninstall-dnf-helper|--uninstall-dnf|--debug)
             # Known commands/options; continue into main logic
             :
             ;;
@@ -1756,9 +1756,14 @@ if [[ "${1:-}" == "--help" || "${1:-}" == "-h" || "${1:-}" == "help" \
     echo "  --reset-config          Reset /etc/dnf-auto.conf to documented defaults (with backup)"
     echo "  --reset-downloads       Clear cached download/notifier state and restart timers (alias: --reset-state)"
     echo "  --reset-state           Alias for --reset-downloads"
+    echo "  --logs                  Show tails of installer, service, and notifier logs"
+    echo "  --test-notify           Send a test desktop notification to verify GUI/DBus wiring"
     echo "  --uninstall-dnf-helper  Remove dnf-auto-helper services, timers, logs, and user scripts (alias: --uninstall-dnf)"
     echo "  --uninstall-dnf         Alias for --uninstall-dnf-helper"
     echo "  --help                  Show this help message"
+    echo ""
+    echo "Global flags:"
+    echo "  --debug                 Enable verbose debug logging and shell tracing"
     echo ""
     echo "Examples:"
     echo "  dnf-auto-helper install         # Full installation (via shell alias, runs with sudo)"
@@ -1819,6 +1824,17 @@ elif [[ "${1:-}" == "--logs" || "${1:-}" == "--log" ]]; then
         echo "=== User Notifier Log (last 40 lines) ==="
         tail -n 40 "${SUDO_USER_HOME}/.local/share/dnf-notify/notifier-detailed.log" 2>/dev/null || true
     fi
+    exit 0
+elif [[ "${1:-}" == "--test-notify" ]]; then
+    log_info "Notification system self-test requested"
+    if [ -z "${SUDO_USER:-}" ]; then
+        log_error "Cannot run --test-notify without SUDO_USER (run via sudo)."
+        exit 1
+    fi
+    USER_BUS_PATH="unix:path=/run/user/$(id -u "${SUDO_USER}")/bus"
+    log_debug "Using user bus path for test-notify: ${USER_BUS_PATH}"
+    sudo -u "${SUDO_USER}" DBUS_SESSION_BUS_ADDRESS="${USER_BUS_PATH}" \
+        /usr/bin/python3 "${NOTIFY_SCRIPT_PATH}" --test-notify || true
     exit 0
 elif [[ "${1:-}" == "--uninstall-dnf-helper" || "${1:-}" == "--uninstall-dnf" ]]; then
     shift
@@ -3686,6 +3702,8 @@ def check_disk_space() -> tuple[bool, str]:
             return True, "Could not parse disk space"
         
         available_str = fields[3].rstrip('G')
+        # Extra debug so we can see exactly what df printed and how we parsed it
+        log_debug(f"Disk check: Parsed '{fields[3]}' -> {available_str} GB available")
         available_gb = int(available_str)
         
         if available_gb < 5:
@@ -3798,28 +3816,31 @@ def check_snapshots() -> tuple[bool, str]:
     log_info(msg)
     return False, msg
 def _curl_connectivity_probe() -> tuple[bool, str]:
-    """Fallback connectivity test using curl against a simple HTTP endpoint."""
+    """Fallback connectivity test with detailed error logging."""
     try:
+        # Use --show-error so curl prints a useful reason on stderr when it fails.
         result = subprocess.run(
             [
                 "curl",
                 "-I",
                 "--silent",
-                "--fail",
+                "--show-error",
                 "http://fedoraproject.org",
             ],
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=10,
         )
         if result.returncode == 0:
             return True, "Network reachable (curl probe)"
-        log_info("curl connectivity probe failed")
-        return False, "Network probe failed (curl)"
+
+        err_msg = (result.stderr or "").strip()
+        log_debug(f"curl probe failed (code {result.returncode}): {err_msg}")
+        return False, f"Network probe failed: {err_msg or 'curl error'}"
     except FileNotFoundError:
         return True, "Network check skipped (curl not installed)"
     except Exception as e:
-        log_debug(f"curl connectivity probe failed: {e}")
+        log_debug(f"curl connectivity probe exception: {e}")
         return True, "Network check skipped"
 
 
@@ -4441,15 +4462,13 @@ def get_updates():
             return ""  # Return empty string to skip further processing in this cycle
 
         # 1b) Transaction explicitly aborted by the user (common with --assumeno).
-        # In this case DNF often still prints a complete preview summary even
-        # though it exits non-zero, so we can safely reuse stdout as if the
-        # command had succeeded and continue with normal ready-to-install logic.
-        lower_stderr = stderr_text.lower()
-        abort_markers = (
-            "operation aborted by user",
-            "operation avbröts av användaren",
-        )
-        if any(m in lower_stderr for m in abort_markers):
+        # In this case DNF/DNF5 often still prints a complete preview summary even
+        # though it exits non-zero. We look for a generic "operation aborted by"
+        # fragment in either stderr or stdout (to cover both English and
+        # Swedish/localised output) and, when found, treat the preview as
+        # successful and reuse stdout for normal parsing.
+        combined = (stderr_text + "\n" + stdout_text).lower()
+        if "operation aborted by" in combined or "operation avbröts av" in combined:
             log_info("dnf preview exited with 'operation aborted by user'; returning preview output for notification parsing")
             return stdout_text
 
@@ -4463,6 +4482,29 @@ def get_updates():
         )
         if any(marker in lower_stderr for marker in polkit_markers):
             log_error("Policy Block Failure: PolicyKit/PAM refused command")
+
+            # --- Polkit agent diagnostics ---
+            try:
+                ps_out = subprocess.check_output(["ps", "-ef"], text=True)
+                agents = [
+                    "polkit-gnome",
+                    "polkit-kde",
+                    "polkit-mate",
+                    "lxqt-policykit",
+                    "polkit-agent-helper",
+                ]
+                running_agents = [a for a in agents if a in ps_out]
+                if not running_agents:
+                    log_error(
+                        "CRITICAL DIAGNOSTIC: No graphical Polkit authentication agent "
+                        "detected running; pkexec may not be able to show a password prompt."
+                    )
+                else:
+                    log_debug(f"Polkit agents detected running: {running_agents}")
+            except Exception:
+                pass
+            # --- end diagnostics ---
+
             update_status("FAILED: PolicyKit/PAM authentication error")
             if stderr_text:
                 log_error(f"Policy Error: {stderr_text.strip()}")
@@ -4694,6 +4736,19 @@ def main():
         log_environment_debug()
         log_debug("Initializing notification system...")
         Notify.init("dnf-updater")
+
+        # 1. Simple argument parsing for test mode
+        if "--test-notify" in sys.argv:
+            log_info("Test notification requested.")
+            n = Notify.Notification.new(
+                "Test Notification",
+                "If you see this, the notification daemon, DBus, and icons are working correctly.",
+                "emblem-default",
+            )
+            n.set_timeout(0)
+            n.show()
+            print("Notification sent. Check your desktop.")
+            return
         
         # Check if updates are snoozed FIRST - skip all notifications if snoozed
         if check_snoozed():
@@ -5364,7 +5419,24 @@ def main():
         log_error(f"An error occurred in main: {e}")
         update_status(f"FAILED: {str(e)}")
         import traceback
-        log_error(f"Traceback: {traceback.format_exc()}")
+        tb = traceback.format_exc()
+        log_error(f"Traceback: {tb}")
+
+        # Try to surface a visible crash notification so the user knows the
+        # background helper failed instead of silently dying.
+        try:
+            subprocess.run(
+                [
+                    "notify-send",
+                    "-u",
+                    "critical",
+                    "DNF Auto-Helper Crashed",
+                    f"The background service failed.\\nError: {str(e)}\\n\\nSee {LOG_FILE} for details.",
+                ],
+                timeout=2,
+            )
+        except Exception:
+            pass
     finally:
         log_info("Shutting down notification system")
         Notify.uninit()
