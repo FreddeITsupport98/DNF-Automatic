@@ -1043,6 +1043,25 @@ else
     log_info "ℹ Status file will be created on first run"
 fi
 
+# Auto-fix: detect and reset stale download status so the helper does not
+# appear to be "stuck" in a downloading state forever (for example after a
+# crash or abrupt reboot).
+if [ -f "/var/log/dnf-auto/download-status.txt" ]; then
+    NOW_TS=$(date +%s)
+    STATUS_MTIME=$(stat -c %Y "/var/log/dnf-auto/download-status.txt" 2>/dev/null || echo "$NOW_TS")
+    STATUS_AGE=$((NOW_TS - STATUS_MTIME))
+    # Treat anything older than 1 hour in an in-progress state as stale.
+    if printf '%s\n' "$CURRENT_STATUS" | grep -qE '^(refreshing|downloading:)' && [ "$STATUS_AGE" -gt 3600 ]; then
+        log_error "⚠ Warning: Stale download status '$CURRENT_STATUS' detected (age ${STATUS_AGE}s)"
+        log_info "  → Auto-fixer: resetting download status and timing files so background downloads can resume cleanly"
+        echo "idle" > "/var/log/dnf-auto/download-status.txt" 2>>"${LOG_FILE}" || true
+        rm -f "/var/log/dnf-auto/download-last-check.txt" \
+              "/var/log/dnf-auto/download-start-time.txt" 2>>"${LOG_FILE}" || true
+        REPAIR_ATTEMPTS=$((REPAIR_ATTEMPTS + 1))
+        log_success "  ✓ Stale download status reset; helper will perform a fresh check on next run"
+    fi
+fi
+
 # Check 11: Stale DNF/RPM lock cleanup
 log_debug "[11/12] Checking for stale DNF/RPM lock files..."
 
@@ -2127,6 +2146,28 @@ fi
 DUP_EXTRA_FLAGS="${DUP_EXTRA_FLAGS:-}"
 CACHE_EXPIRY_MINUTES="${CACHE_EXPIRY_MINUTES:-10}"
 DOWNLOADER_DOWNLOAD_MODE="${DOWNLOADER_DOWNLOAD_MODE:-full}"
+
+# Opportunistic stale-state auto-fix on downloader startup: if a previous
+# run left us stuck in an in-progress state for a long time, reset to
+# idle so that future runs and the notifier see a clean slate.
+if [ -f "$STATUS_FILE" ]; then
+    now_startup=$(date +%s)
+    status_text="$(cat "$STATUS_FILE" 2>/dev/null || echo "")"
+    status_mtime=$(stat -c %Y "$STATUS_FILE" 2>/dev/null || echo "$now_startup")
+    age=$(( now_startup - status_mtime ))
+    if [ "$age" -lt 0 ] 2>/dev/null; then
+        age=0
+    fi
+    case "$status_text" in
+        refreshing|downloading:*)
+            if [ "$age" -ge 3600 ] 2>/dev/null; then
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] Detected stale downloader state '$status_text' (age ${age}s) - resetting to idle" >&2
+                echo "idle" > "$STATUS_FILE"
+                rm -f "$START_TIME_FILE" "$LOG_DIR/download-last-check.txt"
+            fi
+            ;;
+    esac
+fi
 
 # Detect which DNF binary to use (dnf5 or legacy dnf). Allow an
 # externally-supplied DNF_CMD to override detection for testing.
@@ -4774,10 +4815,17 @@ def main():
                 with open(download_status_file, 'r') as f:
                     status = f.read().strip()
 
-                # If status looks like an in‑progress state but is stale, ignore it
+                # If status looks like an in‑progress state but is stale, reset it
+                # immediately so we do not appear to be "stuck" and then
+                # continue with a fresh full check.
                 if status in ("refreshing",) or status.startswith("downloading:"):
                     if age_seconds > 300:  # older than 5 minutes
-                        log_info(f"Stale download status '{status}' (age {age_seconds:.0f}s) - ignoring and continuing to full check")
+                        log_info(f"Stale download status '{status}' (age {age_seconds:.0f}s) - resetting to idle and continuing to full check")
+                        try:
+                            with open(download_status_file, "w", encoding="utf-8") as f:
+                                f.write("idle")
+                        except Exception as e2:
+                            log_debug(f"Failed to reset stale download status: {e2}")
                     else:
                         # Handle stage-based status for fresh operations
                         if status == "refreshing":
