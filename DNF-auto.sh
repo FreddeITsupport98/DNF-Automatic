@@ -138,6 +138,9 @@ echo "==============================================" | tee -a "${LOG_FILE}"
 echo "" | tee -a "${LOG_FILE}"
 
 # Logging functions
+# Global debug flag, can be enabled via --debug on the CLI.
+DEBUG_MODE=${DEBUG_MODE:-0}
+
 log_info() {
     echo "[INFO] $(date '+%H:%M:%S') $*" | tee -a "${LOG_FILE}"
 }
@@ -151,8 +154,40 @@ log_error() {
 }
 
 log_debug() {
-    echo "[DEBUG] $(date '+%H:%M:%S') $*" | tee -a "${LOG_FILE}"
+    # Always append debug messages to the log file
+    echo "[DEBUG] $(date '+%H:%M:%S') $*" >> "${LOG_FILE}"
+    # When DEBUG_MODE is enabled, also mirror debug to stderr in real time
+    if [ "${DEBUG_MODE}" -eq 1 ] 2>/dev/null; then
+        echo "[DEBUG] $*" >&2
+    fi
 }
+
+# If the user passed --debug anywhere on the command line, enable shell tracing
+# and more verbose console logging while leaving the main behaviour unchanged.
+if [ $# -gt 0 ]; then
+    for __arg in "$@"; do
+        if [ "${__arg}" = "--debug" ]; then
+            DEBUG_MODE=1
+            break
+        fi
+    done
+    if [ "${DEBUG_MODE}" -eq 1 ] 2>/dev/null; then
+        log_info "Debug mode enabled: activating shell trace"
+        # Strip --debug from the positional parameters so it does not
+        # confuse later option parsing.
+        __new_args=()
+        for __arg in "$@"; do
+            if [ "${__arg}" = "--debug" ]; then
+                continue
+            fi
+            __new_args+=("${__arg}")
+        done
+        set -- "${__new_args[@]}"
+        # Enable xtrace after we've initialised logging so traces are also
+        # captured in the install log via PS4 if desired.
+        set -x
+    fi
+fi
 
 log_command() {
     local cmd="$*"
@@ -1772,6 +1807,19 @@ elif [[ "${1:-}" == "--reset-downloads" || "${1:-}" == "--reset-state" ]]; then
     log_info "Download/notifier state reset mode requested"
     run_reset_download_state_only
     exit $?
+elif [[ "${1:-}" == "--logs" || "${1:-}" == "--log" ]]; then
+    log_info "Log viewer mode requested"
+    echo "=== System/Installer Log (last 40 lines) ==="
+    tail -n 40 "${LOG_DIR}"/install-*.log 2>/dev/null | tail -n 40 || true
+    echo ""
+    echo "=== Service Logs (last 40 lines) ==="
+    tail -n 40 "${LOG_DIR}"/service-logs/*.log 2>/dev/null || true
+    echo ""
+    if [ -n "${SUDO_USER_HOME:-}" ]; then
+        echo "=== User Notifier Log (last 40 lines) ==="
+        tail -n 40 "${SUDO_USER_HOME}/.local/share/dnf-notify/notifier-detailed.log" 2>/dev/null || true
+    fi
+    exit 0
 elif [[ "${1:-}" == "--uninstall-dnf-helper" || "${1:-}" == "--uninstall-dnf" ]]; then
     shift
     # Parse optional flags for the uninstaller:
@@ -2369,7 +2417,7 @@ if ! /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 "$DNF_CMD" -q upgrade --assume
         # everything that is safe, without the user having to configure
         # anything.
         DRY_ERR_FALLBACK=$(mktemp)
-        if /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 \
+            if /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 \
             "$DNF_CMD" -q upgrade --assumeno $DNF_TOLERANT_FLAGS $DUP_EXTRA_FLAGS \
             > "$DRY_OUTPUT" 2>"$DRY_ERR_FALLBACK"; then
             # Tolerant preview succeeded; discard previous errors and
@@ -2395,6 +2443,8 @@ if ! /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 "$DNF_CMD" -q upgrade --assume
                 echo "[SUMMARY] stage=preview classification=error:solver" >&2
             fi
 
+            # Preserve the last failing DNF preview stderr for debugging
+            cp "$DRY_ERR" "${LOG_DIR}/last-dnf-preview-error.log" 2>/dev/null || true
             cat "$DRY_ERR" >&2 || true
             rm -f "$DRY_ERR" "$DRY_OUTPUT"
             exit 0
@@ -3588,10 +3638,31 @@ def log_update_history(snapshot: str, package_count: int) -> None:
         
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with open(HISTORY_FILE, 'a') as f:
-            f.write(f"[{timestamp}] Installed snapshot {snapshot} with {package_count} packages\n")
+            f.write(f"[{timestamp}] Installed snapshot {snapshot} with {package_count} packages\\n")
         log_info(f"Update history logged: {snapshot}")
     except Exception as e:
         log_error(f"Failed to log update history: {e}")
+
+
+def log_environment_debug() -> None:
+    """Dump critical environment variables to help debug DBus/GUI issues."""
+    keys = [
+        "DISPLAY",
+        "WAYLAND_DISPLAY",
+        "DBUS_SESSION_BUS_ADDRESS",
+        "XDG_RUNTIME_DIR",
+        "XDG_SESSION_TYPE",
+        "HOME",
+    ]
+    log_debug("--- Environment Dump ---")
+    for key in keys:
+        val = os.environ.get(key, "<UNSET>")
+        log_debug(f"{key}: {val}")
+    try:
+        if "DBUS_SESSION_BUS_ADDRESS" not in os.environ:
+            log_error("CRITICAL: DBUS_SESSION_BUS_ADDRESS is unset.")
+    except Exception:
+        pass
 
 # --- Safety Checks ---
 def check_disk_space() -> tuple[bool, str]:
@@ -4369,8 +4440,20 @@ def get_updates():
 
             return ""  # Return empty string to skip further processing in this cycle
 
-        # 2) Check for PolicyKit / authentication style errors.
+        # 1b) Transaction explicitly aborted by the user (common with --assumeno).
+        # In this case DNF often still prints a complete preview summary even
+        # though it exits non-zero, so we can safely reuse stdout as if the
+        # command had succeeded and continue with normal ready-to-install logic.
         lower_stderr = stderr_text.lower()
+        abort_markers = (
+            "operation aborted by user",
+            "operation avbröts av användaren",
+        )
+        if any(m in lower_stderr for m in abort_markers):
+            log_info("dnf preview exited with 'operation aborted by user'; returning preview output for notification parsing")
+            return stdout_text
+
+        # 2) Check for PolicyKit / authentication style errors.
         polkit_markers = (
             "polkit",
             "authentication is required",
@@ -4608,6 +4691,7 @@ def on_action(notification, action_id, user_data):
 
 def main():
     try:
+        log_environment_debug()
         log_debug("Initializing notification system...")
         Notify.init("dnf-updater")
         
@@ -5450,6 +5534,10 @@ has_pkg_lock() {
 
 # Create a wrapper script that will run in the terminal
 RUN_UPDATE() {
+    # Ensure the window stays open so the user can read any errors, even
+    # when the update fails very early (syntax error, pkexec denial, etc.).
+    trap 'echo ""; echo "Script exited with code $?"; echo "Press Enter to close this window..."; read -r _' EXIT
+
     echo ""
     echo "=========================================="
     echo "  Running System Update"
