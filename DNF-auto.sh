@@ -2431,7 +2431,7 @@ rm -f "$REFRESH_ERR"
 # Get update info using a non-interactive dnf transaction preview
 DRY_OUTPUT=$(mktemp)
 DRY_ERR=$(mktemp)
-if ! /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 "$DNF_CMD" -q upgrade --assumeno $DUP_EXTRA_FLAGS > "$DRY_OUTPUT" 2>"$DRY_ERR"; then
+if ! /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 "$DNF_CMD" -q update --assumeno $DUP_EXTRA_FLAGS > "$DRY_OUTPUT" 2>"$DRY_ERR"; then
     # Handle lock first; if it is just a lock, this will mark status idle
     # and exit 0 so we do not need to set an additional error state.
     handle_lock_or_fail "$DRY_ERR"
@@ -2457,7 +2457,7 @@ if ! /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 "$DNF_CMD" -q upgrade --assume
         "$DNF_CMD" clean metadata >/dev/null 2>&1 || true
 
         DRY_ERR_RETRY=$(mktemp)
-        if /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 "$DNF_CMD" -q upgrade --assumeno $DUP_EXTRA_FLAGS > "$DRY_OUTPUT" 2>"$DRY_ERR_RETRY"; then
+        if /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 "$DNF_CMD" -q update --assumeno $DUP_EXTRA_FLAGS > "$DRY_OUTPUT" 2>"$DRY_ERR_RETRY"; then
             # Auto-repair on preview succeeded; clear error state and
             # continue as if the original preview had worked.
             rm -f "$DRY_ERR" "$DRY_ERR_RETRY"
@@ -2475,7 +2475,7 @@ if ! /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 "$DNF_CMD" -q upgrade --assume
         # anything.
         DRY_ERR_FALLBACK=$(mktemp)
             if /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 \
-            "$DNF_CMD" -q upgrade --assumeno $DNF_TOLERANT_FLAGS $DUP_EXTRA_FLAGS \
+            "$DNF_CMD" -q update --assumeno $DNF_TOLERANT_FLAGS $DUP_EXTRA_FLAGS \
             > "$DRY_OUTPUT" 2>"$DRY_ERR_FALLBACK"; then
             # Tolerant preview succeeded; discard previous errors and
             # continue as if the original preview had worked.
@@ -2575,7 +2575,7 @@ fi
 # lock error to avoid noisy logs when another package manager instance is running.
 set +e
 DL_ERR=$(mktemp)
-/usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 "$DNF_CMD" -q upgrade --downloadonly -y $DUP_EXTRA_FLAGS >/dev/null 2>"$DL_ERR"
+/usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 "$DNF_CMD" -q update --downloadonly -y $DUP_EXTRA_FLAGS >/dev/null 2>"$DL_ERR"
 DNF_RET=$?
 if [ $DNF_RET -ne 0 ]; then
     handle_lock_or_fail "$DL_ERR"
@@ -2585,8 +2585,8 @@ if [ $DNF_RET -ne 0 ]; then
     # erasing and skips broken/unavailable packages so we can still
     # prefetch as much as possible.
     DL_ERR_FALLBACK=$(mktemp)
-    /usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 \
-        "$DNF_CMD" -q upgrade --downloadonly -y $DNF_TOLERANT_FLAGS $DUP_EXTRA_FLAGS \
+/usr/bin/nice -n -20 /usr/bin/ionice -c1 -n0 \
+        "$DNF_CMD" -q update --downloadonly -y $DNF_TOLERANT_FLAGS $DUP_EXTRA_FLAGS \
         >/dev/null 2>"$DL_ERR_FALLBACK"
     DNF_RET=$?
     if [ $DNF_RET -eq 0 ]; then
@@ -4392,7 +4392,7 @@ def get_updates():
     """Run dnf and return the output.
 
     Returns:
-        - stdout string from a non-interactive "dnf upgrade --assumeno" when environment is safe
+        - stdout string from a non-interactive "dnf update --assumeno" when environment is safe
         - "" (empty string) if environment is not safe and we skip dnf
         - None if dnf/PolicyKit fails
     """
@@ -4428,7 +4428,7 @@ def get_updates():
         )
         log_info("dnf makecache completed successfully")
 
-        update_status("Running dnf upgrade --assumeno (preview)...")
+        update_status("Running dnf update --assumeno (preview)...")
 
         # Build a shell-safe representation of extra flags so they are
         # honoured even when running under sh -c.
@@ -4442,7 +4442,7 @@ def get_updates():
             if DUP_EXTRA_FLAGS:
                 shell_flags = " " + " ".join(str(f) for f in DUP_EXTRA_FLAGS)
 
-        cmd_str = "LC_ALL=C " + shlex.quote(DNF_CMD) + " -q upgrade --assumeno" + shell_flags
+        cmd_str = "LC_ALL=C " + shlex.quote(DNF_CMD) + " -q update --assumeno" + shell_flags
         log_debug(f"Executing: pkexec /usr/bin/sh -c {cmd_str!r}")
 
         dup_cmd = ["pkexec", "/usr/bin/sh", "-c", cmd_str]
@@ -4454,7 +4454,7 @@ def get_updates():
             text=True,
             env=env,
         )
-        log_info("dnf upgrade --assumeno completed successfully")
+        log_info("dnf update --assumeno completed successfully")
         return result.stdout
 
     except subprocess.CalledProcessError as e:
