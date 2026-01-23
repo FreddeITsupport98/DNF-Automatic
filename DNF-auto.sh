@@ -2509,7 +2509,9 @@ DURATION=$((END_TIME - START_TIME))
 #  - If we actually downloaded new packages, mark as complete
 #  - If nothing was downloaded but dnf returned an error, mark an error
 #    so the notifier can tell the user that manual intervention is required
-#  - If nothing was downloaded and dnf returned success, treat as idle
+#  - If nothing was downloaded and dnf returned success, treat as idle, but
+#    still trigger the notifier so it can re-check and show a "Ready to
+#    Install" notification when updates are pending.
 if [ $ACTUAL_DOWNLOADED -gt 0 ]; then
     echo "complete:$DURATION:$ACTUAL_DOWNLOADED" > "$STATUS_FILE"
     trigger_notifier
@@ -2519,6 +2521,11 @@ elif [ $DNF_RET -ne 0 ]; then
 else
     echo "idle" > "$STATUS_FILE"
     echo "[SUMMARY] stage=download result=idle (no new packages downloaded)" >&2
+    # Even when no new packages were fetched (for example because everything
+    # was already cached), wake the notifier so it can run a fresh preview
+    # and, if updates are still pending, show a "Ready to Install" message
+    # to the user.
+    trigger_notifier
 fi
 
 DLSCRIPT
@@ -4521,6 +4528,11 @@ def parse_output(output: str, include_preview: bool = True):
                 preview_str += f", and {package_count - len(preview_packages)} more"
             message += f"\n\nIncluding: {preview_str}"
 
+    # Make it explicit in the body that updates are ready to install so the
+    # notification text always contains that phrasing.
+    if "ready to install" not in message.lower():
+        message += "\n\nReady to install."
+
     return title, message, snapshot, package_count
 
 def on_action(notification, action_id, user_data):
@@ -5215,9 +5227,11 @@ def main():
         last_notification = _read_last_notification()
         current_notification = f"{title}|{message}"
         
+        # Even when UPDATES_READY_REMINDER_REPEAT_ENABLED is false, we now
+        # always re-show "Updates Ready to Install" so the user continuously
+        # sees that updates are pending until they act.
         if (not UPDATES_READY_REMINDER_REPEAT_ENABLED) and last_notification == current_notification:
-            log_info("'Updates ready' notification already shown, skipping duplicate (UPDATES_READY_REMINDER_REPEAT_ENABLED=false)")
-            return
+            log_info("'Updates ready' notification already shown previously; repeating because always-on reminders are enabled")
         
         if last_notification == current_notification:
             log_debug("Notification unchanged, re-showing to keep it visible")
