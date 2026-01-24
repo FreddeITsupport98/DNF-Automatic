@@ -3605,6 +3605,15 @@ LOCK_REMINDER_ENABLED = _read_bool_from_config("LOCK_REMINDER_ENABLED", True)
 NO_UPDATES_REMINDER_REPEAT_ENABLED = _read_bool_from_config("NO_UPDATES_REMINDER_REPEAT_ENABLED", True)
 UPDATES_READY_REMINDER_REPEAT_ENABLED = _read_bool_from_config("UPDATES_READY_REMINDER_REPEAT_ENABLED", True)
 
+# Downloader mode from config: controls whether we expect packages to be
+# pre-downloaded (full) or only detected (detect-only). When in detect-only
+# mode we still show "Updates ready" even without a completed download.
+try:
+    _mode_raw = _bash_read_config_var("DOWNLOADER_DOWNLOAD_MODE") or "full"
+    DOWNLOADER_DOWNLOAD_MODE = _mode_raw.strip().strip("'\"").strip().lower() or "full"
+except Exception:
+    DOWNLOADER_DOWNLOAD_MODE = "full"
+
 # --- Caching Functions ---
 def read_cache():
     """Read cached update check results.
@@ -4782,6 +4791,12 @@ def main():
         log_debug("Initializing notification system...")
         Notify.init("dnf-updater")
 
+        # Track whether this notifier cycle has seen a confirmed completed
+        # background download. We will only show the final "Updates ready"
+        # notification when downloads are confirmed, unless the downloader
+        # is explicitly configured for detect-only mode.
+        downloads_confirmed_ready = False
+
         # 1. Simple argument parsing for test mode
         if "--test-notify" in sys.argv:
             log_info("Test notification requested.")
@@ -5082,6 +5097,13 @@ def main():
                             # Skip the downloads-complete popup; normal update check below
                             # will show the usual 'system up to date' message instead.
                         else:
+                            # Mark that we have a confirmed completed download
+                            # (either everything was already cached or we just
+                            # downloaded new packages). This will gate the
+                            # later "Updates ready" notification unless the
+                            # downloader is in detect-only mode.
+                            downloads_confirmed_ready = True
+
                             # Build a completion message for both cases:
                             #  - actual_downloaded == 0  => everything was already in cache
                             #  - actual_downloaded > 0   => we just downloaded new packages
@@ -5387,6 +5409,15 @@ def main():
         
         # Write cache for future checks
         write_cache(package_count, snapshot)
+
+        # Only show the final "Updates ready" notification when we know
+        # that packages have been downloaded (or were already cached),
+        # except when the downloader is explicitly configured in
+        # detect-only mode. This ensures the Install button appears only
+        # after downloads are confirmed.
+        if DOWNLOADER_DOWNLOAD_MODE != "detect-only" and not downloads_confirmed_ready:
+            log_info("Downloads not yet confirmed complete; skipping 'updates ready' notification this cycle.")
+            return
 
         log_info("Updates are pending. Sending 'updates ready' reminder.")
         update_status(f"Updates available: {title}")
