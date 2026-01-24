@@ -41,7 +41,7 @@ By default it runs a full `dnf update --downloadonly` in the background (configu
 - **Single entrypoint command:**
   - `dnf-auto-helper` in `/usr/local/bin` (installed by `DNF-auto.sh`).
   - Shell aliases for Bash, Zsh, and Fish so you can just type `dnf-auto-helper`.
-  - Sub‑commands: `install`, `--verify`, `--repair`, `--diagnose`, `--check`, `--reset-config`, `--soar`, `--brew`, `--pip-package` (alias: `--pipx`), and scripted uninstall modes.
+  - Common commands/modes: `install`, `--verify` / `--repair` / `--diagnose`, `--check` / `--self-check`, `--reset-config`, `--reset-downloads` / `--reset-state`, `--logs`, `--live-logs`, `--test-notify`, `--soar`, `--brew`, `--pip-package` (alias: `--pipx`), and scripted uninstall modes.
 
 - **Background pre‑download of updates:**
   - Root systemd service + timer:
@@ -155,9 +155,9 @@ Run once (or whenever you update config) as root:
 
 Typical flow:
 
-1. Downloader timer fires and pre‑downloads updates using DNF.
+1. Downloader timer fires and pre‑downloads updates using DNF (when `DOWNLOADER_DOWNLOAD_MODE=full`).
 2. Notifier timer wakes up, checks the cached status and DNF preview.
-3. If updates are ready, you see a **"Updates Ready"** notification with buttons like **Install**, **View Changes**, **Snooze 1h/4h/1d**.
+3. Once background downloads have completed and there are still pending updates, you see a persistent **"Updates Ready"** notification with buttons like **Install**, **View Changes**, **Snooze 1h/4h/1d**.
 4. Clicking **Install** opens a terminal running `dnf-run-install`, which wraps `pkexec dnf upgrade` and post‑update helpers.
 
 -----
@@ -184,16 +184,21 @@ After installation, restart your shell or open a new terminal so the `dnf-auto-h
 ### Using `dnf-auto-helper`
 
 ```bash
-dnf-auto-helper --help          # Show help and available commands
-dnf-auto-helper install         # Re-run installation / upgrade
-dnf-auto-helper --verify        # Full health check + auto-repair
-dnf-auto-helper --repair        # Alias for --verify
-dnf-auto-helper --diagnose      # Alias for --verify
-dnf-auto-helper --check         # Syntax/self-check only
-dnf-auto-helper --reset-config  # Reset /etc/dnf-auto.conf to defaults (with backup)
-dnf-auto-helper --soar          # Optional Soar helper (install/upgrade)
-dnf-auto-helper --brew          # Optional Homebrew helper (install/upgrade)
-dnf-auto-helper --pip-package   # Optional pipx helper (install/upgrade, alias: --pipx)
+dnf-auto-helper --help             # Show help and available commands
+dnf-auto-helper install            # Re-run installation / upgrade
+dnf-auto-helper --verify           # Full health check + auto-repair
+dnf-auto-helper --repair           # Alias for --verify
+dnf-auto-helper --diagnose         # Alias for --verify
+dnf-auto-helper --check            # Syntax/self-check only
+dnf-auto-helper --reset-config     # Reset /etc/dnf-auto.conf to defaults (with backup)
+dnf-auto-helper --reset-downloads  # Clear download/notifier state and restart timers (alias: --reset-state)
+dnf-auto-helper --logs             # Show recent installer/service/notifier logs
+dnf-auto-helper --live-logs        # Follow logs in real time (requires sudo)
+dnf-auto-helper --test-notify      # Send a test desktop notification via the notifier unit
+dnf-auto-helper --soar             # Optional Soar helper (install/upgrade)
+dnf-auto-helper --brew             # Optional Homebrew helper (install/upgrade)
+dnf-auto-helper --pip-package      # Optional pipx helper (install/upgrade, alias: --pipx)
+dnf-auto-helper --uninstall-dnf-helper  # Remove helper timers/services/scripts/logs (alias: --uninstall-dnf)
 ```
 
 You normally run `dnf-auto-helper` **without** `sudo`; it uses `pkexec` or root services internally when needed.
@@ -224,8 +229,8 @@ Some important options (names match what `DNF-auto.sh` expects):
 
 - **Downloader behaviour and DNF flags**
   - `DOWNLOADER_DOWNLOAD_MODE` (case‑sensitive):
-    - `full` (default) – run a full `dnf update --downloadonly` and cache packages.
-    - `detect-only` – only run a non‑interactive preview; no pre‑download.
+    - `full` (default) – run a full `dnf update --downloadonly` and cache packages. The notifier only shows the final "Updates ready" / **Install** notification after a completed background download has been confirmed (or everything was already cached).
+    - `detect-only` – only run a non‑interactive preview; no pre‑download. In this mode, notifications can appear as soon as the preview sees pending updates, even if packages are not yet cached.
   - `DUP_EXTRA_FLAGS` – extra flags appended to every DNF call made by the helper
     (both downloader and notifier). Useful for things like `--refresh` or repo
     selection flags.
@@ -282,11 +287,21 @@ Example commands:
 # Show most recent install log
 ls -t /var/log/dnf-auto/install-*.log | head -1 | xargs sudo cat
 
-# Downloder service logs
+# Downloader service logs
 sudo cat /var/log/dnf-auto/service-logs/downloader.log
 
 # Notifier details
 cat ~/.local/share/dnf-notify/notifier-detailed.log
+```
+
+Helper shortcuts:
+
+```bash
+# One-shot log summary (tails of installer, services, notifier)
+dnf-auto-helper --logs
+
+# Live view of all logs (installer, services, notifier); Ctrl+C to exit
+sudo dnf-auto-helper --live-logs
 ```
 
 Logs are automatically rotated and pruned; no manual maintenance is required.
