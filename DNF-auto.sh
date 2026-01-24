@@ -1776,6 +1776,7 @@ if [[ "${1:-}" == "--help" || "${1:-}" == "-h" || "${1:-}" == "help" \
     echo "  --reset-downloads       Clear cached download/notifier state and restart timers (alias: --reset-state)"
     echo "  --reset-state           Alias for --reset-downloads"
     echo "  --logs                  Show tails of installer, service, and notifier logs"
+    echo "  --live-logs             Follow installer/service/notifier logs in real time (Ctrl+C to exit)"
     echo "  --test-notify           Send a test desktop notification to verify GUI/DBus wiring"
     echo "  --uninstall-dnf-helper  Remove dnf-auto-helper services, timers, logs, and user scripts (alias: --uninstall-dnf)"
     echo "  --uninstall-dnf         Alias for --uninstall-dnf-helper"
@@ -1843,6 +1844,46 @@ elif [[ "${1:-}" == "--logs" || "${1:-}" == "--log" ]]; then
         echo "=== User Notifier Log (last 40 lines) ==="
         tail -n 40 "${SUDO_USER_HOME}/.local/share/dnf-notify/notifier-detailed.log" 2>/dev/null || true
     fi
+    exit 0
+elif [[ "${1:-}" == "--live-logs" ]]; then
+    log_info "Live log follow mode requested"
+    echo "Following DNF auto-helper logs. Press Ctrl+C to exit."
+
+    latest_install_log=""
+    if ls -1 "${LOG_DIR}"/install-*.log >/dev/null 2>&1; then
+        latest_install_log=$(ls -1t "${LOG_DIR}"/install-*.log 2>/dev/null | head -1 || true)
+    fi
+
+    # Build list of files to follow
+    LOG_FILES_TO_FOLLOW=()
+    if [ -n "${latest_install_log}" ]; then
+        echo "- Installer log: ${latest_install_log}"
+        LOG_FILES_TO_FOLLOW+=("${latest_install_log}")
+    fi
+
+    if [ -d "${LOG_DIR}/service-logs" ]; then
+        # shellcheck disable=SC2086
+        for f in "${LOG_DIR}/service-logs"/*.log; do
+            if [ -f "$f" ]; then
+                echo "- Service log: $f"
+                LOG_FILES_TO_FOLLOW+=("$f")
+            fi
+        done
+    fi
+
+    if [ -n "${SUDO_USER_HOME:-}" ] && [ -f "${SUDO_USER_HOME}/.local/share/dnf-notify/notifier-detailed.log" ]; then
+        echo "- Notifier log: ${SUDO_USER_HOME}/.local/share/dnf-notify/notifier-detailed.log"
+        LOG_FILES_TO_FOLLOW+=("${SUDO_USER_HOME}/.local/share/dnf-notify/notifier-detailed.log")
+    fi
+
+    if [ "${#LOG_FILES_TO_FOLLOW[@]}" -eq 0 ]; then
+        echo "No log files found yet under ${LOG_DIR} or notifier directory."
+        exit 0
+    fi
+
+    # Show a bit of history, then follow; -F keeps following across rotations.
+    # shellcheck disable=SC2068
+    tail -n 50 -F ${LOG_FILES_TO_FOLLOW[@]}
     exit 0
 elif [[ "${1:-}" == "--test-notify" ]]; then
     log_info "Notification system self-test requested"
