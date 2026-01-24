@@ -49,6 +49,7 @@ if [[ $# -gt 0 ]]; then
     case "${1:-}" in
         install|--help|-h|help|--verify|--repair|--diagnose|--check|--self-check|\
         --soar|--brew|--pip-package|--pipx|--reset-config|--reset-downloads|--reset-state|\
+        --logs|--log|--live-logs|--test-notify|\
         --uninstall-dnf-helper|--uninstall-dnf|--debug)
             # Known commands/options; continue into main logic
             :
