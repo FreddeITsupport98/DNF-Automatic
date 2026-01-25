@@ -302,6 +302,17 @@ dnf-auto-helper --logs
 
 # Live view of all logs (installer, services, notifier); Ctrl+C to exit
 sudo dnf-auto-helper --live-logs
+
+# StLogs are automatically rotated and pruned; no manual maintenance is required.
+
+If you need compact, per-day diagnostic traces for debugging, you can also
+use the background diagnostics follower (see below) to aggregate logs into
+`/var/log/dnf-auto/diagnostics/diag-YYYY-MM-DD.log` with automatic 10‑day
+retention.
+o-helper --diag-logs-on
+
+# Stop diagnostics follower (if running)
+sudo dnf-auto-helper --diag-logs-off
 ```
 
 Logs are automatically rotated and pruned; no manual maintenance is required.

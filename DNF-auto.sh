@@ -49,7 +49,7 @@ if [[ $# -gt 0 ]]; then
     case "${1:-}" in
         install|--help|-h|help|--verify|--repair|--diagnose|--check|--self-check|\
         --soar|--brew|--pip-package|--pipx|--reset-config|--reset-downloads|--reset-state|\
-        --logs|--log|--live-logs|--test-notify|\
+        --logs|--log|--live-logs|--diag-logs-on|--diag-logs-off|--test-notify|\
         --uninstall-dnf-helper|--uninstall-dnf|--debug)
             # Known commands/options; continue into main logic
             :
@@ -1244,6 +1244,90 @@ update_status "SUCCESS: dnf-auto-helper configuration reset to defaults"
 echo "  sudo ./DNF-auto.sh install" | tee -a "${LOG_FILE}"
 }
 
+# --- Helper: Background diagnostic log follower (CLI) ---
+#
+# This mode starts (or restarts) a small background service that tails the
+# main helper logs into a compact per-day diagnostics file:
+#   /var/log/dnf-auto/diagnostics/diag-YYYY-MM-DD.log
+#
+# At most 10 days of diagnostics logs are kept; older files are pruned based
+# on mtime to avoid unbounded disk usage.
+run_diag_logs_on_only() {
+    log_info ">>> Enabling background diagnostics log follower (dnf-auto-diag-logs.service)"
+    update_status "Enabling diagnostics log follower..."
+
+    local diag_dir diag_file today
+    diag_dir="${LOG_DIR}/diagnostics"
+    mkdir -p "${diag_dir}" >> "${LOG_FILE}" 2>&1 || true
+
+    # Prune diagnostics logs older than 10 days to keep disk usage bounded.
+    # This uses file mtime; a 10-day window is sufficient for troubleshooting.
+    find "${diag_dir}" -type f -name 'diag-*.log' -mtime +9 -print -delete >> "${LOG_FILE}" 2>&1 || true
+
+    today="$(date +%Y-%m-%d)"
+    diag_file="${diag_dir}/diag-${today}.log"
+
+    log_info "Diagnostics log file for today: ${diag_file}"
+
+    # Stop any existing diagnostic follower service so we don't start duplicates.
+    systemctl stop dnf-auto-diag-logs.service >> "${LOG_FILE}" 2>&1 || true
+
+    # Build the list of log files to follow. We largely mirror --live-logs but
+    # run via a transient systemd service so it can continue in the background.
+    local latest_install_log
+    latest_install_log=""
+    if ls -1 "${LOG_DIR}"/install-*.log >/dev/null 2>&1; then
+        latest_install_log=$(ls -1t "${LOG_DIR}"/install-*.log 2>/dev/null | head -1 || true)
+    fi
+
+    # Compose the tail command as a single shell-safe string for systemd-run.
+    local tail_cmd=""
+    if [ -n "${latest_install_log}" ]; then
+        tail_cmd+=" ${latest_install_log}"
+    fi
+
+    if [ -d "${LOG_DIR}/service-logs" ]; then
+        # shellcheck disable=SC2086
+        for f in "${LOG_DIR}/service-logs"/*.log; do
+            if [ -f "$f" ]; then
+                tail_cmd+=" $f"
+            fi
+        done
+    fi
+
+    if [ -n "${SUDO_USER_HOME:-}" ] && [ -f "${SUDO_USER_HOME}/.local/share/dnf-notify/notifier-detailed.log" ]; then
+        tail_cmd+=" ${SUDO_USER_HOME}/.local/share/dnf-notify/notifier-detailed.log"
+    fi
+
+    if [ -z "${tail_cmd}" ]; then
+        log_info "No existing logs found to follow; diagnostics follower will start once logs exist."
+        # Still create the diagnostics directory and empty file for consistency.
+        : > "${diag_file}" 2>/dev/null || true
+        return 0
+    fi
+
+    # Build the full command. We use tail -n 0 -F so that:
+    #  - We don't dump historical logs (file stays relatively small per day).
+    #  - We follow across log rotations.
+    # We wrap everything in /usr/bin/sh -lc so that environment and quoting
+    # behave as expected under systemd.
+    local cmd
+    cmd="tail -n 0 -F${tail_cmd} >> $(printf '%q' "${diag_file}") 2>&1"
+
+    log_debug "Starting diagnostic follower via systemd-run: ${cmd}"
+    if systemd-run --unit dnf-auto-diag-logs --description "DNF auto-helper diagnostics follower" \
+        /usr/bin/sh -lc "${cmd}" >> "${LOG_FILE}" 2>&1; then
+        log_success "Diagnostics follower started as systemd unit dnf-auto-diag-logs.service"
+        update_status "SUCCESS: Diagnostics log follower enabled"
+    else
+        log_error "Failed to start diagnostics follower (dnf-auto-diag-logs.service)"
+        update_status "FAILED: Could not enable diagnostics log follower"
+        return 1
+    fi
+
+    return 0
+}
+
 # --- Helper: Reset download/notifier state (CLI) ---
 run_reset_download_state_only() {
     log_info ">>> Resetting dnf-auto-helper download/notifier state..."
@@ -1885,6 +1969,15 @@ elif [[ "${1:-}" == "--live-logs" ]]; then
     # Show a bit of history, then follow; -F keeps following across rotations.
     # shellcheck disable=SC2068
     tail -n 50 -F ${LOG_FILES_TO_FOLLOW[@]}
+    exit 0
+elif [[ "${1:-}" == "--diag-logs-on" ]]; then
+    log_info "Diagnostics log follower enable mode requested"
+    run_diag_logs_on_only
+    exit $?
+elif [[ "${1:-}" == "--diag-logs-off" ]]; then
+    log_info "Diagnostics log follower disable mode requested"
+    systemctl stop dnf-auto-diag-logs.service >> "${LOG_FILE}" 2>&1 || true
+    update_status "SUCCESS: Diagnostics log follower disabled"
     exit 0
 elif [[ "${1:-}" == "--test-notify" ]]; then
     log_info "Notification system self-test requested"
