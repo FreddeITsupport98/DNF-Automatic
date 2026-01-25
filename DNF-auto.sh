@@ -47,10 +47,10 @@ fi
 # '-reset'.
 if [[ $# -gt 0 ]]; then
     case "${1:-}" in
-        install|--help|-h|help|--verify|--repair|--diagnose|--check|--self-check|\
+        install|debug|--help|-h|help|--verify|--repair|--diagnose|--check|--self-check|\
         --soar|--brew|--pip-package|--pipx|--reset-config|--reset-downloads|--reset-state|\
-        --logs|--log|--live-logs|--diag-logs-on|--diag-logs-off|--show-logs|--show-loggs|--test-notify|\
-        --uninstall-dnf-helper|--uninstall-dnf|--debug)
+        --logs|--log|--live-logs|--diag-logs-on|--diag-logs-off|--show-logs|--show-loggs|--snapshot-state|--diag-bundle|--test-notify|\
+        --uninstall-dnf-helper|--uninstall-dnf|--debug-menu|--debug)
             # Known commands/options; continue into main logic
             :
             ;;
@@ -142,21 +142,38 @@ echo "" | tee -a "${LOG_FILE}"
 # Global debug flag, can be enabled via --debug on the CLI.
 DEBUG_MODE=${DEBUG_MODE:-0}
 
+# Optional structured debug level via environment. When DNF_AUTO_DEBUG_LEVEL is
+# set to "debug" or "trace", we automatically enable DEBUG_MODE so that
+# log_debug output is recorded even without the --debug CLI flag.
+DEBUG_LEVEL="${DNF_AUTO_DEBUG_LEVEL:-info}"
+case "${DEBUG_LEVEL}" in
+    debug|trace)
+        DEBUG_MODE=1
+        ;;
+    *)
+        :
+        ;;
+esac
+
+# Per-invocation run identifier used to correlate all log lines from this
+# helper invocation in diagnostics logs.
+RUN_ID="R$(date +%Y%m%dT%H%M%S)-$$"
+
 log_info() {
-    echo "[INFO] $(date '+%H:%M:%S') $*" | tee -a "${LOG_FILE}"
+    echo "[INFO] $(date '+%H:%M:%S') [RUN=${RUN_ID}] $*" | tee -a "${LOG_FILE}"
 }
 
 log_success() {
-    echo "[SUCCESS] $(date '+%H:%M:%S') $*" | tee -a "${LOG_FILE}"
+    echo "[SUCCESS] $(date '+%H:%M:%S') [RUN=${RUN_ID}] $*" | tee -a "${LOG_FILE}"
 }
 
 log_error() {
-    echo "[ERROR] $(date '+%H:%M:%S') $*" | tee -a "${LOG_FILE}" >&2
+    echo "[ERROR] $(date '+%H:%M:%S') [RUN=${RUN_ID}] $*" | tee -a "${LOG_FILE}" >&2
 }
 
 log_debug() {
     # Always append debug messages to the log file
-    echo "[DEBUG] $(date '+%H:%M:%S') $*" >> "${LOG_FILE}"
+    echo "[DEBUG] $(date '+%H:%M:%S') [RUN=${RUN_ID}] $*" >> "${LOG_FILE}"
     # When DEBUG_MODE is enabled, also mirror debug to stderr in real time
     if [ "${DEBUG_MODE}" -eq 1 ] 2>/dev/null; then
         echo "[DEBUG] $*" >&2
@@ -1330,13 +1347,40 @@ run_diag_logs_on_only() {
         return 0
     fi
 
-    # Build the full command. We use tail -n 0 -F so that:
-    #  - We don't dump historical logs (file stays relatively small per day).
-    #  - We follow across log rotations.
-    # We wrap everything in /usr/bin/sh -lc so that environment and quoting
+    # Ensure source-tagging follower helper exists so each line in the
+    # diagnostics log is tagged with its origin (INSTALL, DOWNLOADER,
+    # NOTIFIER, etc.).
+    local diag_follower
+    diag_follower="/usr/local/bin/dnf-auto-diag-follow"
+    if [ ! -x "${diag_follower}" ]; then
+        cat << 'EOF' > "${diag_follower}"
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ "$#" -eq 0 ]; then
+    exit 0
+fi
+
+for path in "$@"; do
+    [ -e "$path" ] || continue
+    base="$(basename "$path")"
+    src="${base%.*}"
+    src="${src^^}"
+    # Tail each file and prefix lines with a source tag based on the basename.
+    tail -n 0 -F "$path" | sed -u "s/^/[SRC=${src}] /" &
+done
+
+wait || true
+EOF
+        chmod +x "${diag_follower}" || true
+    fi
+
+    # Build the full command. We call the helper with all log files as
+    # arguments and append its tagged output into the diagnostics file. We
+    # wrap everything in /usr/bin/sh -lc so that environment and quoting
     # behave as expected under systemd.
     local cmd
-    cmd="tail -n 0 -F${tail_cmd} >> $(printf '%q' "${diag_file}") 2>&1"
+    cmd="${diag_follower}${tail_cmd} >> $(printf '%q' "${diag_file}") 2>&1"
 
     log_debug "Starting diagnostic follower via systemd-run: ${cmd}"
     if systemd-run --unit dnf-auto-diag-logs --description "DNF auto-helper diagnostics follower" \
@@ -1350,6 +1394,261 @@ run_diag_logs_on_only() {
     fi
 
     return 0
+}
+
+# --- Helper: Snapshot current system/helper state into diagnostics log (CLI) ---
+run_snapshot_state_only() {
+    log_info ">>> Capturing one-shot diagnostics snapshot into today's diag log..."
+
+    local diag_dir today diag_file
+    diag_dir="${LOG_DIR}/diagnostics"
+    mkdir -p "${diag_dir}" >> "${LOG_FILE}" 2>&1 || true
+    today="$(date +%Y-%m-%d)"
+    diag_file="${diag_dir}/diag-${today}.log"
+
+    {
+        echo "===== SNAPSHOT STATE at $(date '+%Y-%m-%d %H:%M:%S') [RUN=${RUN_ID}] ====="
+        echo "-- Core systemd units (system) --"
+        systemctl --no-pager status dnf-autodownload.service dnf-autodownload.timer 2>&1 || echo "(dnf-autodownload.* not found)"
+        systemctl --no-pager status dnf-auto-verify.service dnf-auto-verify.timer 2>&1 || echo "(dnf-auto-verify.* not found)"
+        echo
+        echo "-- User notifier units (for ${SUDO_USER:-root}) --"
+        if [ -n "${SUDO_USER:-}" ]; then
+            USER_BUS_PATH="unix:path=/run/user/$(id -u "${SUDO_USER}")/bus"
+            sudo -u "${SUDO_USER}" DBUS_SESSION_BUS_ADDRESS="${USER_BUS_PATH}" \
+                systemctl --user --no-pager status dnf-notify-user.service dnf-notify-user.timer 2>&1 || echo "(user notifier units not found)"
+        else
+            echo "(no SUDO_USER; skipping user notifier status)"
+        fi
+        echo
+        echo "-- Downloader status file --"
+        if [ -f "${LOG_DIR}/download-status.txt" ]; then
+            echo "Path: ${LOG_DIR}/download-status.txt"
+            echo "Contents:"
+            cat "${LOG_DIR}/download-status.txt" 2>/dev/null || echo "(unreadable)"
+            echo "Metadata:"
+            stat "${LOG_DIR}/download-status.txt" 2>/dev/null || echo "(no stat)"
+        else
+            echo "No download-status.txt present"
+        fi
+        echo
+        echo "-- Notifier last-run-status (user ${SUDO_USER:-root}) --"
+        if [ -n "${SUDO_USER_HOME:-}" ] && [ -f "${SUDO_USER_HOME}/.local/share/dnf-notify/last-run-status.txt" ]; then
+            echo "Path: ${SUDO_USER_HOME}/.local/share/dnf-notify/last-run-status.txt"
+            cat "${SUDO_USER_HOME}/.local/share/dnf-notify/last-run-status.txt" 2>/dev/null || echo "(unreadable)"
+            stat "${SUDO_USER_HOME}/.local/share/dnf-notify/last-run-status.txt" 2>/dev/null || echo "(no stat)"
+        else
+            echo "No notifier last-run-status.txt present for user"
+        fi
+        echo
+        echo "-- Disk and network summary --"
+        df -h / 2>/dev/null || echo "(df failed)"
+        if command -v nmcli >/dev/null 2>&1; then
+            nmcli -t -f STATE g 2>/dev/null || echo "(nmcli general state failed)"
+        fi
+        echo
+        echo "-- One-shot dnf preview (may be empty if command fails quickly) --"
+        if command -v dnf >/dev/null 2>&1; then
+            dnf -q upgrade --assumeno 2>&1 | head -n 50 || echo "(dnf preview failed or produced no output)"
+        fi
+        echo "===== END SNAPSHOT STATE [RUN=${RUN_ID}] ====="
+    } >> "${diag_file}" 2>&1 || true
+
+    update_status "SUCCESS: Diagnostics snapshot captured into ${diag_file}"
+log_success "Diagnostics snapshot captured into ${diag_file}"
+}
+
+# --- Helper: Create a compact diagnostics bundle tarball (CLI) ---
+run_diag_bundle_only() {
+    log_info ">>> Creating diagnostics bundle tarball..."
+
+    local diag_dir bundle_dir bundle_file ts
+    diag_dir="${LOG_DIR}/diagnostics"
+    bundle_dir="${SUDO_USER_HOME:-$HOME}"
+    ts="$(date +%Y%m%d-%H%M%S)"
+    bundle_file="${bundle_dir}/dnf-auto-diag-${ts}.tar.xz"
+
+    mkdir -p "${diag_dir}" >> "${LOG_FILE}" 2>&1 || true
+
+    # Build list of files to include (best-effort)
+    local include_files=()
+
+    # All diagnostics logs (already pruned to ~10 days)
+    if ls -1 "${diag_dir}"/diag-*.log >/dev/null 2>&1; then
+        include_files+=("-C" "${diag_dir}" $(ls -1 "${diag_dir}"/diag-*.log | xargs -n1 basename))
+    fi
+
+    # Last-status summary
+    if [ -f "${STATUS_FILE}" ]; then
+        include_files+=("-C" "${LOG_DIR}" "$(basename "${STATUS_FILE}")")
+    fi
+
+    # Most recent installer logs (up to 3)
+    if ls -1 "${LOG_DIR}"/install-*.log >/dev/null 2>&1; then
+        local inst
+        inst=$(ls -1t "${LOG_DIR}"/install-*.log 2>/dev/null | head -3)
+        if [ -n "${inst}" ]; then
+            include_files+=("-C" "${LOG_DIR}" $(printf '%s\n' ${inst} | xargs -n1 basename))
+        fi
+    fi
+
+    # Notifier logs for user
+    if [ -n "${SUDO_USER_HOME:-}" ]; then
+        local ulogdir
+        ulogdir="${SUDO_USER_HOME}/.local/share/dnf-notify"
+        if [ -d "${ulogdir}" ]; then
+            if [ -f "${ulogdir}/notifier-detailed.log" ]; then
+                include_files+=("-C" "${ulogdir}" "notifier-detailed.log")
+            fi
+            if [ -f "${ulogdir}/last-run-status.txt" ]; then
+                include_files+=("-C" "${ulogdir}" "last-run-status.txt")
+            fi
+        fi
+    fi
+
+    # Config and version header (include whole config + script header)
+    if [ -f "${CONFIG_FILE}" ]; then
+        include_files+=("-C" "/" "${CONFIG_FILE#/}")
+    fi
+    # Include the installer script itself for version context
+    if [ -f "$0" ]; then
+        include_files+=("-C" "/" "${0#/}")
+    fi
+
+    if [ "${#include_files[@]}" -eq 0 ]; then
+        log_error "No diagnostics-related files found to bundle."
+        return 1
+    fi
+
+    # Create tar.xz bundle
+    if tar -cJf "${bundle_file}" "${include_files[@]}" >> "${LOG_FILE}" 2>&1; then
+        log_success "Diagnostics bundle created at ${bundle_file}"
+        update_status "SUCCESS: Diagnostics bundle created at ${bundle_file}"
+        echo "Diagnostics bundle: ${bundle_file}"
+        return 0
+    else
+        log_error "Failed to create diagnostics bundle at ${bundle_file}"
+        update_status "FAILED: Could not create diagnostics bundle"
+        return 1
+    fi
+}
+
+# --- Helper: Interactive debug / diagnostics menu (CLI) ---
+run_debug_menu_only() {
+    log_info ">>> Interactive debug / diagnostics tools menu..."
+
+    while true; do
+        # Detect whether the diagnostics follower is currently active so we
+        # can show a dynamic, coloured toggle label for option 1.
+        local follower_active follower_label
+        if systemctl is-active --quiet dnf-auto-diag-logs.service 2>/dev/null; then
+            follower_active=1
+            # Red "Disable" label
+            follower_label="\033[31mDisable diagnostics follower and view live logs\033[0m"
+        else
+            follower_active=0
+            # Green "Enable" label
+            follower_label="\033[32mEnable diagnostics follower and view live logs\033[0m"
+        fi
+
+        echo ""
+        echo "=============================================="
+        echo "  DNF Auto-Helper Debug / Diagnostics Menu"
+        echo "=============================================="
+        printf '  1) %b\n' "${follower_label}"
+        echo "  2) Capture one-shot diagnostics snapshot"
+        echo "  3) Create diagnostics bundle tarball"
+        echo "  4) Open diagnostics logs folder"
+        echo "  5) Disable diagnostics follower (legacy; same as 1 when active)"
+        echo "  6) Run notification self-test"
+        echo "  7) Exit menu"
+        echo ""
+        read -p "Select an option [1-7]: " -r choice
+
+        case "${choice}" in
+            1)
+                if [ "${follower_active}" -eq 1 ] 2>/dev/null; then
+                    # Currently active -> toggle OFF
+                    log_info "[debug-menu] Disabling diagnostics follower via toggle"
+                    systemctl stop dnf-auto-diag-logs.service >> "${LOG_FILE}" 2>&1 || true
+                    update_status "SUCCESS: Diagnostics log follower disabled via debug menu toggle"
+                    echo "Diagnostics follower disabled."
+                    # Loop continues so the menu re-renders with the green "Enable" label.
+                else
+                    # Currently inactive -> toggle ON and show live logs
+                    log_info "[debug-menu] Enabling diagnostics follower and viewing live logs"
+                    run_diag_logs_on_only || true
+                    echo ""
+                    echo "Following diagnostics logs. Press Ctrl+C to stop."
+                    # Prefer today's aggregated diagnostics file when available.
+                    local diag_dir today diag_file
+                    diag_dir="${LOG_DIR}/diagnostics"
+                    today="$(date +%Y-%m-%d)"
+                    diag_file="${diag_dir}/diag-${today}.log"
+                    mkdir -p "${diag_dir}" >> "${LOG_FILE}" 2>&1 || true
+                    touch "${diag_file}" >> "${LOG_FILE}" 2>&1 || true
+                    tail -n 50 -F "${diag_file}"
+                    # When tail exits (Ctrl+C), break the whole menu loop.
+                    break
+                fi
+                ;;
+            2)
+                log_info "[debug-menu] Capturing diagnostics snapshot"
+                run_snapshot_state_only || true
+                echo "Snapshot captured into today's diagnostics log."
+                ;;
+            3)
+                log_info "[debug-menu] Creating diagnostics bundle"
+                if run_diag_bundle_only; then
+                    echo "Diagnostics bundle created successfully."
+                else
+                    echo "Failed to create diagnostics bundle (see install log)."
+                fi
+                ;;
+            4)
+                log_info "[debug-menu] Opening diagnostics logs folder"
+                local diag_dir
+                diag_dir="${LOG_DIR}/diagnostics"
+                echo "Diagnostics logs directory: ${diag_dir}"
+                mkdir -p "${diag_dir}" >> "${LOG_FILE}" 2>&1 || true
+                chmod 755 "${diag_dir}" >> "${LOG_FILE}" 2>&1 || true
+                find "${diag_dir}" -type f -name 'diag-*.log' -exec chmod 644 {} \; >> "${LOG_FILE}" 2>&1 || true
+                if command -v xdg-open >/dev/null 2>&1; then
+                    if [ -n "${SUDO_USER:-}" ]; then
+                        USER_BUS_PATH="unix:path=/run/user/$(id -u "${SUDO_USER}")/bus"
+                        sudo -u "${SUDO_USER}" DBUS_SESSION_BUS_ADDRESS="${USER_BUS_PATH}" \
+                            xdg-open "${diag_dir}" >> "${LOG_FILE}" 2>&1 || true
+                    else
+                        xdg-open "${diag_dir}" >> "${LOG_FILE}" 2>&1 || true
+                    fi
+                fi
+                ;;
+            5)
+                log_info "[debug-menu] Disabling diagnostics follower (legacy option)"
+                systemctl stop dnf-auto-diag-logs.service >> "${LOG_FILE}" 2>&1 || true
+                update_status "SUCCESS: Diagnostics log follower disabled via debug menu (option 5)"
+                ;;
+            6)
+                log_info "[debug-menu] Notification system self-test"
+                if [ -z "${SUDO_USER:-}" ]; then
+                    log_error "Cannot run notification self-test without SUDO_USER (run via sudo)."
+                    echo "This option must be run via sudo so we know which desktop user to notify."
+                else
+                    USER_BUS_PATH="unix:path=/run/user/$(id -u "${SUDO_USER}")/bus"
+                    log_debug "Using user bus path for debug-menu test-notify: ${USER_BUS_PATH}"
+                    sudo -u "${SUDO_USER}" DBUS_SESSION_BUS_ADDRESS="${USER_BUS_PATH}" \
+                        /usr/bin/python3 "${NOTIFY_SCRIPT_PATH}" --test-notify || true
+                fi
+                ;;
+            7|q|Q)
+                log_info "[debug-menu] Exiting debug/diagnostics menu"
+                break
+                ;;
+            *)
+                echo "Invalid selection: '${choice}'. Please enter a number between 1 and 7."
+                ;;
+        esac
+    done
 }
 
 # --- Helper: Reset download/notifier state (CLI) ---
@@ -1873,6 +2172,7 @@ if [[ "${1:-}" == "--help" || "${1:-}" == "-h" || "${1:-}" == "help" \
     echo ""
     echo "Commands:"
     echo "  install                 Install or update the DNF auto-updater system (default)"
+    echo "  debug                   Open interactive debug/diagnostics tools menu"
     echo "  --verify                Run verification and auto-repair checks"
     echo "  --repair                Same as --verify (alias)"
     echo "  --diagnose              Same as --verify (alias)"
@@ -2006,6 +2306,10 @@ elif [[ "${1:-}" == "--live-logs" ]]; then
     # shellcheck disable=SC2068
     tail -n 50 -F ${LOG_FILES_TO_FOLLOW[@]}
     exit 0
+elif [[ "${1:-}" == "debug" || "${1:-}" == "--debug-menu" ]]; then
+    log_info "Interactive debug/diagnostics menu requested"
+    run_debug_menu_only
+    exit $?
 elif [[ "${1:-}" == "--diag-logs-on" ]]; then
     log_info "Diagnostics log follower enable mode requested"
     run_diag_logs_on_only
@@ -2015,6 +2319,14 @@ elif [[ "${1:-}" == "--diag-logs-off" ]]; then
     systemctl stop dnf-auto-diag-logs.service >> "${LOG_FILE}" 2>&1 || true
     update_status "SUCCESS: Diagnostics log follower disabled"
     exit 0
+elif [[ "${1:-}" == "--snapshot-state" ]]; then
+    log_info "Diagnostics snapshot mode requested"
+    run_snapshot_state_only
+    exit $?
+elif [[ "${1:-}" == "--diag-bundle" ]]; then
+    log_info "Diagnostics bundle mode requested"
+    run_diag_bundle_only
+    exit $?
 elif [[ "${1:-}" == "--show-logs" || "${1:-}" == "--show-loggs" ]]; then
     log_info "Diagnostics logs browser requested"
     local diag_dir

@@ -41,7 +41,7 @@ By default it runs a full `dnf update --downloadonly` in the background (configu
 - **Single entrypoint command:**
   - `dnf-auto-helper` in `/usr/local/bin` (installed by `DNF-auto.sh`).
   - Shell aliases for Bash, Zsh, and Fish so you can just type `dnf-auto-helper`.
-  - Common commands/modes: `install`, `--verify` / `--repair` / `--diagnose`, `--check` / `--self-check`, `--reset-config`, `--reset-downloads` / `--reset-state`, `--logs`, `--live-logs`, `--test-notify`, `--soar`, `--brew`, `--pip-package` (alias: `--pipx`), and scripted uninstall modes.
+  - Common commands/modes: `install`, `debug`, `--verify` / `--repair` / `--diagnose`, `--check` / `--self-check`, `--reset-config`, `--reset-downloads` / `--reset-state`, `--logs`, `--live-logs`, `--test-notify`, `--soar`, `--brew`, `--pip-package` (alias: `--pipx`), and scripted uninstall modes.
 
 - **Background pre‑download of updates:**
   - Root systemd service + timer:
@@ -186,18 +186,24 @@ After installation, restart your shell or open a new terminal so the `dnf-auto-h
 ```bash
 dnf-auto-helper --help             # Show help and available commands
 dnf-auto-helper install            # Re-run installation / upgrade
+dnf-auto-helper debug              # Open interactive debug/diagnostics tools menu
+
 dnf-auto-helper --verify           # Full health check + auto-repair
 dnf-auto-helper --repair           # Alias for --verify
 dnf-auto-helper --diagnose         # Alias for --verify
 dnf-auto-helper --check            # Syntax/self-check only
+
 dnf-auto-helper --reset-config     # Reset /etc/dnf-auto.conf to defaults (with backup)
 dnf-auto-helper --reset-downloads  # Clear download/notifier state and restart timers (alias: --reset-state)
+
 dnf-auto-helper --logs             # Show recent installer/service/notifier logs
 dnf-auto-helper --live-logs        # Follow logs in real time (requires sudo)
 dnf-auto-helper --test-notify      # Send a test desktop notification via the notifier unit
+
 dnf-auto-helper --soar             # Optional Soar helper (install/upgrade)
 dnf-auto-helper --brew             # Optional Homebrew helper (install/upgrade)
 dnf-auto-helper --pip-package      # Optional pipx helper (install/upgrade, alias: --pipx)
+
 dnf-auto-helper --uninstall-dnf-helper  # Remove helper timers/services/scripts/logs (alias: --uninstall-dnf)
 ```
 
@@ -297,6 +303,9 @@ cat ~/.local/share/dnf-notify/notifier-detailed.log
 Helper shortcuts:
 
 ```bash
+# Open interactive debug/diagnostics tools menu (recommended entrypoint)
+sudo dnf-auto-helper debug
+
 # One-shot log summary (tails of installer, services, notifier)
 dnf-auto-helper --logs
 
@@ -308,6 +317,15 @@ sudo dnf-auto-helper --diag-logs-on
 
 # Stop diagnostics follower (if running)
 sudo dnf-auto-helper --diag-logs-off
+
+# Capture a one-shot diagnostics snapshot into today's diagnostics log
+sudo dnf-auto-helper --snapshot-state
+
+# Create a compressed diagnostics bundle tarball in your home directory
+sudo dnf-auto-helper --diag-bundle
+
+# Open the diagnostics logs folder in your file manager (alias: --show-loggs)
+sudo dnf-auto-helper --show-logs
 ```
 
 Logs are automatically rotated and pruned; no manual maintenance is required.
@@ -316,6 +334,28 @@ If you need compact, per-day diagnostic traces for debugging, you can also
 use the background diagnostics follower to aggregate logs into
 `/var/log/dnf-auto/diagnostics/diag-YYYY-MM-DD.log` with automatic 10‑day
 retention.
+
+### Unified debug & diagnostics menu
+
+For most troubleshooting, start with the menu:
+
+```bash
+sudo dnf-auto-helper debug
+```
+
+This opens an interactive menu that can:
+
+- Enable the diagnostics follower and show a live view of the aggregated
+  `diag-YYYY-MM-DD.log` file.
+- Capture a one-shot diagnostics snapshot (systemd unit status, status files,
+  disk/network summary, and a short DNF preview) into today's diagnostics log.
+- Create a sharable diagnostics bundle tarball with recent logs and config.
+- Open the diagnostics logs folder in your file manager.
+- Disable the diagnostics follower.
+- Run the notification self-test (same as `--test-notify`).
+
+All of these actions are read-only with respect to your packages; they only
+inspect or bundle logs and helper state.
 
 -----
 
