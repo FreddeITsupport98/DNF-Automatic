@@ -1544,11 +1544,11 @@ run_debug_menu_only() {
         if systemctl is-active --quiet dnf-auto-diag-logs.service 2>/dev/null; then
             follower_active=1
             # Red "Disable" label
-            follower_label="\033[31mDisable diagnostics follower and view live logs\033[0m"
+            follower_label="\033[31mDisable diagnostics follower\033[0m"
         else
             follower_active=0
             # Green "Enable" label
-            follower_label="\033[32mEnable diagnostics follower and view live logs\033[0m"
+            follower_label="\033[32mEnable diagnostics follower\033[0m"
         fi
 
         echo ""
@@ -1556,10 +1556,10 @@ run_debug_menu_only() {
         echo "  DNF Auto-Helper Debug / Diagnostics Menu"
         echo "=============================================="
         printf '  1) %b\n' "${follower_label}"
-        echo "  2) Capture one-shot diagnostics snapshot"
-        echo "  3) Create diagnostics bundle tarball"
-        echo "  4) Open diagnostics logs folder"
-        echo "  5) Disable diagnostics follower (legacy; same as 1 when active)"
+        echo "  2) View live diagnostics logs"
+        echo "  3) Capture one-shot diagnostics snapshot"
+        echo "  4) Create diagnostics bundle tarball"
+        echo "  5) Open diagnostics logs folder"
         echo "  6) Run notification self-test"
         echo "  7) Exit menu"
         echo ""
@@ -1573,31 +1573,74 @@ run_debug_menu_only() {
                     systemctl stop dnf-auto-diag-logs.service >> "${LOG_FILE}" 2>&1 || true
                     update_status "SUCCESS: Diagnostics log follower disabled via debug menu toggle"
                     echo "Diagnostics follower disabled."
-                    # Loop continues so the menu re-renders with the green "Enable" label.
                 else
-                    # Currently inactive -> toggle ON and show live logs
-                    log_info "[debug-menu] Enabling diagnostics follower and viewing live logs"
+                    # Currently inactive -> toggle ON (no tail here; option 2 handles live view)
+                    log_info "[debug-menu] Enabling diagnostics follower via toggle"
                     run_diag_logs_on_only || true
-                    echo ""
-                    echo "Following diagnostics logs. Press Ctrl+C to stop."
-                    # Prefer today's aggregated diagnostics file when available.
-                    local diag_dir today diag_file
-                    diag_dir="${LOG_DIR}/diagnostics"
-                    today="$(date +%Y-%m-%d)"
-                    diag_file="${diag_dir}/diag-${today}.log"
-                    mkdir -p "${diag_dir}" >> "${LOG_FILE}" 2>&1 || true
-                    touch "${diag_file}" >> "${LOG_FILE}" 2>&1 || true
+                    echo "Diagnostics follower enabled. Use option 2 to view live logs."
+                fi
+                ;;
+            2)
+                log_info "[debug-menu] Viewing live diagnostics logs"
+                echo "Following diagnostics logs. Press Ctrl+C to stop."
+
+                # Prefer aggregated diagnostics log when follower is running.
+                local diag_dir today diag_file
+                diag_dir="${LOG_DIR}/diagnostics"
+                today="$(date +%Y-%m-%d)"
+                diag_file="${diag_dir}/diag-${today}.log"
+
+                if [ -f "${diag_file}" ] && systemctl is-active --quiet dnf-auto-diag-logs.service 2>/dev/null; then
+                    echo "- Diagnostics log (aggregated): ${diag_file}"
                     tail -n 50 -F "${diag_file}"
                     # When tail exits (Ctrl+C), break the whole menu loop.
                     break
                 fi
+
+                # Fallback: replicate --live-logs behaviour when no aggregated diag file.
+                local latest_install_log=""
+                if ls -1 "${LOG_DIR}"/install-*.log >/dev/null 2>&1; then
+                    latest_install_log=$(ls -1t "${LOG_DIR}"/install-*.log 2>/dev/null | head -1 || true)
+                fi
+
+                # Build list of files to follow
+                local LOG_FILES_TO_FOLLOW=()
+                if [ -n "${latest_install_log}" ]; then
+                    echo "- Installer log: ${latest_install_log}"
+                    LOG_FILES_TO_FOLLOW+=("${latest_install_log}")
+                fi
+
+                if [ -d "${LOG_DIR}/service-logs" ]; then
+                    # shellcheck disable=SC2086
+                    for f in "${LOG_DIR}/service-logs"/*.log; do
+                        if [ -f "$f" ]; then
+                            echo "- Service log: $f"
+                            LOG_FILES_TO_FOLLOW+=("$f")
+                        fi
+                    done
+                fi
+
+                if [ -n "${SUDO_USER_HOME:-}" ] && [ -f "${SUDO_USER_HOME}/.local/share/dnf-notify/notifier-detailed.log" ]; then
+                    echo "- Notifier log: ${SUDO_USER_HOME}/.local/share/dnf-notify/notifier-detailed.log"
+                    LOG_FILES_TO_FOLLOW+=("${SUDO_USER_HOME}/.local/share/dnf-notify/notifier-detailed.log")
+                fi
+
+                if [ "${#LOG_FILES_TO_FOLLOW[@]}" -eq 0 ]; then
+                    echo "No log files found yet under ${LOG_DIR} or notifier directory."
+                    continue
+                fi
+
+                # Show a bit of history, then follow; -F keeps following across rotations.
+                # shellcheck disable=SC2068
+                tail -n 50 -F ${LOG_FILES_TO_FOLLOW[@]}
+                break
                 ;;
-            2)
+            3)
                 log_info "[debug-menu] Capturing diagnostics snapshot"
                 run_snapshot_state_only || true
                 echo "Snapshot captured into today's diagnostics log."
                 ;;
-            3)
+            4)
                 log_info "[debug-menu] Creating diagnostics bundle"
                 if run_diag_bundle_only; then
                     echo "Diagnostics bundle created successfully."
@@ -1605,7 +1648,7 @@ run_debug_menu_only() {
                     echo "Failed to create diagnostics bundle (see install log)."
                 fi
                 ;;
-            4)
+            5)
                 log_info "[debug-menu] Opening diagnostics logs folder"
                 local diag_dir
                 diag_dir="${LOG_DIR}/diagnostics"
@@ -1622,11 +1665,6 @@ run_debug_menu_only() {
                         xdg-open "${diag_dir}" >> "${LOG_FILE}" 2>&1 || true
                     fi
                 fi
-                ;;
-            5)
-                log_info "[debug-menu] Disabling diagnostics follower (legacy option)"
-                systemctl stop dnf-auto-diag-logs.service >> "${LOG_FILE}" 2>&1 || true
-                update_status "SUCCESS: Diagnostics log follower disabled via debug menu (option 5)"
                 ;;
             6)
                 log_info "[debug-menu] Notification system self-test"
