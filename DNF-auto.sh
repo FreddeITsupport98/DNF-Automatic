@@ -1269,6 +1269,30 @@ run_diag_logs_on_only() {
 
     log_info "Diagnostics log file for today: ${diag_file}"
 
+    # Append a compact environment/config snapshot to the diagnostics file so
+    # each day's log is self-contained for debugging.
+    {
+        echo "===== DNF Auto-Helper Diagnostics Session Start: $(date '+%Y-%m-%d %H:%M:%S') ====="
+        echo "Host: $(hostname 2>/dev/null || echo 'unknown')"
+        if [ -f /etc/os-release ]; then
+            . /etc/os-release 2>/dev/null || true
+            echo "OS: ${NAME:-unknown} ${VERSION:-} (ID=${ID:-?}, VARIANT_ID=${VARIANT_ID:--})"
+        fi
+        if command -v dnf >/dev/null 2>&1; then
+            echo "DNF: $(dnf --version 2>/dev/null | head -1)"
+        fi
+        if command -v dnf5 >/dev/null 2>&1; then
+            echo "DNF5: $(dnf5 --version 2>/dev/null | head -1)"
+        fi
+        echo "Config snapshot (${CONFIG_FILE}):"
+        if [ -f "${CONFIG_FILE}" ]; then
+            grep -E '^(DOWNLOADER_DOWNLOAD_MODE|DL_TIMER_INTERVAL_MINUTES|NT_TIMER_INTERVAL_MINUTES|VERIFY_TIMER_INTERVAL_MINUTES|CACHE_EXPIRY_MINUTES|LOCK_REMINDER_ENABLED|NO_UPDATES_REMINDER_REPEAT_ENABLED|UPDATES_READY_REMINDER_REPEAT_ENABLED|VERIFY_NOTIFY_USER_ENABLED)=' "${CONFIG_FILE}" 2>/dev/null || echo "  (no matching keys found)"
+        else
+            echo "  (config file missing)"
+        fi
+        echo "======================================================================"
+    } >> "${diag_file}" 2>/dev/null || true
+
     # Stop any existing diagnostic follower service so we don't start duplicates.
     systemctl stop dnf-auto-diag-logs.service >> "${LOG_FILE}" 2>&1 || true
 
