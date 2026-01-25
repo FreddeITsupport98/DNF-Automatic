@@ -49,7 +49,7 @@ if [[ $# -gt 0 ]]; then
     case "${1:-}" in
         install|--help|-h|help|--verify|--repair|--diagnose|--check|--self-check|\
         --soar|--brew|--pip-package|--pipx|--reset-config|--reset-downloads|--reset-state|\
-        --logs|--log|--live-logs|--diag-logs-on|--diag-logs-off|--test-notify|\
+        --logs|--log|--live-logs|--diag-logs-on|--diag-logs-off|--show-logs|--show-loggs|--test-notify|\
         --uninstall-dnf-helper|--uninstall-dnf|--debug)
             # Known commands/options; continue into main logic
             :
@@ -1958,6 +1958,18 @@ elif [[ "${1:-}" == "--live-logs" ]]; then
     log_info "Live log follow mode requested"
     echo "Following DNF auto-helper logs. Press Ctrl+C to exit."
 
+    # If diagnostics follower is active and today's diagnostics file exists,
+    # prefer to follow that single aggregated log so both you and I can see
+    # the exact same combined view.
+    diag_dir="${LOG_DIR}/diagnostics"
+    today="$(date +%Y-%m-%d)"
+    diag_file="${diag_dir}/diag-${today}.log"
+    if [ -f "${diag_file}" ] && systemctl is-active --quiet dnf-auto-diag-logs.service 2>/dev/null; then
+        echo "- Diagnostics log (aggregated): ${diag_file}"
+        tail -n 50 -F "${diag_file}"
+        exit 0
+    fi
+
     latest_install_log=""
     if ls -1 "${LOG_DIR}"/install-*.log >/dev/null 2>&1; then
         latest_install_log=$(ls -1t "${LOG_DIR}"/install-*.log 2>/dev/null | head -1 || true)
@@ -2002,6 +2014,30 @@ elif [[ "${1:-}" == "--diag-logs-off" ]]; then
     log_info "Diagnostics log follower disable mode requested"
     systemctl stop dnf-auto-diag-logs.service >> "${LOG_FILE}" 2>&1 || true
     update_status "SUCCESS: Diagnostics log follower disabled"
+    exit 0
+elif [[ "${1:-}" == "--show-logs" || "${1:-}" == "--show-loggs" ]]; then
+    log_info "Diagnostics logs browser requested"
+    local diag_dir
+    diag_dir="${LOG_DIR}/diagnostics"
+    echo "Diagnostics logs directory: ${diag_dir}"
+
+    # Ensure directory exists and is user-readable
+    mkdir -p "${diag_dir}" >> "${LOG_FILE}" 2>&1 || true
+    chmod 755 "${diag_dir}" >> "${LOG_FILE}" 2>&1 || true
+    find "${diag_dir}" -type f -name 'diag-*.log' -exec chmod 644 {} \; >> "${LOG_FILE}" 2>&1 || true
+
+    # Try to open the diagnostics folder in the user's file manager when possible.
+    if command -v xdg-open >/dev/null 2>&1; then
+        if [ -n "${SUDO_USER:-}" ]; then
+            USER_BUS_PATH="unix:path=/run/user/$(id -u "${SUDO_USER}")/bus"
+            log_debug "Opening diagnostics folder via xdg-open for SUDO_USER=${SUDO_USER}"
+            sudo -u "${SUDO_USER}" DBUS_SESSION_BUS_ADDRESS="${USER_BUS_PATH}" \
+                xdg-open "${diag_dir}" >> "${LOG_FILE}" 2>&1 || true
+        else
+            log_debug "Opening diagnostics folder via xdg-open as current user"
+            xdg-open "${diag_dir}" >> "${LOG_FILE}" 2>&1 || true
+        fi
+    fi
     exit 0
 elif [[ "${1:-}" == "--test-notify" ]]; then
     log_info "Notification system self-test requested"
