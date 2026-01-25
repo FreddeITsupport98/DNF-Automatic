@@ -1688,8 +1688,13 @@ run_debug_menu_only() {
                 else
                     USER_BUS_PATH="unix:path=/run/user/$(id -u "${SUDO_USER}")/bus"
                     log_debug "Using user bus path for debug-menu test-notify: ${USER_BUS_PATH}"
+                    # Launch the notifier self-test in the background so the
+                    # debug menu remains responsive. The Python script itself
+                    # keeps the test notification visible until you dismiss it.
                     sudo -u "${SUDO_USER}" DBUS_SESSION_BUS_ADDRESS="${USER_BUS_PATH}" \
-                        /usr/bin/python3 "${NOTIFY_SCRIPT_PATH}" --test-notify || true
+                        /usr/bin/python3 "${NOTIFY_SCRIPT_PATH}" --test-notify \
+                        >/dev/null 2>&1 &
+                    echo "Test notification launched. Close it from your desktop when you are done."
                 fi
                 ;;
             7|q|Q|e|E)

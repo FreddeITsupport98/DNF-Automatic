@@ -343,24 +343,85 @@ For most troubleshooting, start with the menu:
 sudo dnf-auto-helper debug
 ```
 
-This opens an interactive menu that can:
+This opens an interactive **debug dashboard** so you don’t have to remember
+individual flags.
 
-- Enable or disable the diagnostics follower (option 1 toggles it; label is
-  green for Enable, red for Disable).
-- View a live stream of diagnostics logs (option 2). While viewing logs, press
-  **E** or **Enter** to stop the log view and return to the menu without using
-  Ctrl+C.
-- Capture a one-shot diagnostics snapshot (systemd unit status, status files,
-  disk/network summary, and a short DNF preview) into today's diagnostics log.
-- Create a sharable diagnostics bundle tarball with recent logs and config.
-- Open the diagnostics logs folder in your file manager.
-- Run the notification self-test (same as `--test-notify`).
+#### Menu options
 
-To exit the menu itself, you can choose option **7** or type **E** / **Q** at
-the prompt.
+1. **Toggle diagnostics follower**  
+   Turns the background log follower on or off.
+   - When **off**: option 1 is shown in **green** as “Enable diagnostics follower”.
+   - When **on**: option 1 is shown in **red** as “Disable diagnostics follower”.
+
+2. **View live diagnostics logs**  
+   Shows a live combined view of all helper logs:
+   - If the diagnostics follower is running, it tails the aggregated
+     `diag-YYYY-MM-DD.log` (with `[SRC=...]` and `[RUN=...]` tags).
+   - Otherwise, it tails the latest installer + service + notifier logs.  
+   While viewing logs, press **E** or **Enter** to stop and return to the menu
+   (no need for Ctrl+C).
+
+3. **Capture one-shot diagnostics snapshot**  
+   Appends a structured snapshot into today’s diagnostics log, including:
+   - Root and user systemd unit status for downloader, verifier, and notifier.
+   - Contents + `stat` of `download-status.txt` and the notifier
+     `last-run-status.txt` file.
+   - Disk and basic network state (`df -h /`, `nmcli` connectivity summary).
+   - A short DNF preview (`dnf -q upgrade --assumeno`, truncated).
+
+4. **Create diagnostics bundle tarball**  
+   Builds a compressed `dnf-auto-diag-YYYYMMDD-HHMMSS.tar.xz` in your home
+   directory, containing:
+   - Recent `diag-*.log` files (~10 days).
+   - `last-status.txt` and a few recent installer logs.
+   - Notifier logs (`notifier-detailed.log`, `last-run-status.txt`).
+   - `/etc/dnf-auto.conf` and the installer script for version/context.
+   This is the easiest artifact to attach to a bug report.
+
+5. **Open diagnostics logs folder**  
+   Opens `/var/log/dnf-auto/diagnostics` in your file manager (when
+   `xdg-open` is available) and ensures files are world-readable.
+
+6. **Run notification self-test**  
+   Sends a dedicated **DNF Auto-Helper Test Notification** using the same
+   desktop integration as real update notifications.
+   - The test notification is persistent and high-urgency; it stays visible
+     until you dismiss it.
+   - Useful to check DBus, icons, and whether clicks on notifications work.
+
+7. **Exit menu**  
+   Exit the debug dashboard. You can choose option **7** or type **E** / **Q**
+   at the prompt.
 
 All of these actions are read-only with respect to your packages; they only
 inspect or bundle logs and helper state.
+
+#### Recommended debugging workflow
+
+If something looks wrong (no notifications, stuck downloads, etc.):
+
+1. Run the debug dashboard:
+
+   ```bash
+   sudo dnf-auto-helper debug
+   ```
+
+2. **Turn on diagnostics follower** (option 1) if it isn’t already enabled.  
+   This will start collecting a rich `diag-YYYY-MM-DD.log` for the current
+   session.
+
+3. **Reproduce the problem**, then use:
+   - Option **2** to watch what the helper is doing in real time.
+   - Option **3** to capture a one-shot snapshot of unit status + state files.
+
+4. If you need to share logs, use option **4** to create a diagnostics bundle
+   and attach the resulting `dnf-auto-diag-*.tar.xz` to your bug report.
+
+5. Use option **6** to confirm that desktop notifications themselves are
+   working even if DNF says “no updates”.
+
+This gives you a single entrypoint (`dnf-auto-helper debug`) that can drive
+all the diagnostic features without memorising individual command-line flags.
 
 -----
 
