@@ -345,14 +345,19 @@ sudo dnf-auto-helper debug
 
 This opens an interactive menu that can:
 
-- Enable the diagnostics follower and show a live view of the aggregated
-  `diag-YYYY-MM-DD.log` file.
+- Enable or disable the diagnostics follower (option 1 toggles it; label is
+  green for Enable, red for Disable).
+- View a live stream of diagnostics logs (option 2). While viewing logs, press
+  **E** or **Enter** to stop the log view and return to the menu without using
+  Ctrl+C.
 - Capture a one-shot diagnostics snapshot (systemd unit status, status files,
   disk/network summary, and a short DNF preview) into today's diagnostics log.
 - Create a sharable diagnostics bundle tarball with recent logs and config.
 - Open the diagnostics logs folder in your file manager.
-- Disable the diagnostics follower.
 - Run the notification self-test (same as `--test-notify`).
+
+To exit the menu itself, you can choose option **7** or type **E** / **Q** at
+the prompt.
 
 All of these actions are read-only with respect to your packages; they only
 inspect or bundle logs and helper state.

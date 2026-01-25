@@ -5360,13 +5360,25 @@ def main():
         if "--test-notify" in sys.argv:
             log_info("Test notification requested.")
             n = Notify.Notification.new(
-                "Test Notification",
-                "If you see this, the notification daemon, DBus, and icons are working correctly.",
-                "emblem-default",
+                "DNF Auto-Helper Test Notification",
+                "If you see this and can click it, your notification daemon, DBus, and icons are working correctly.",
+                "system-software-update",
             )
-            n.set_timeout(0)
-            n.show()
-            print("Notification sent. Check your desktop.")
+            # Request a persistent, high-urgency notification so it does not
+            # disappear instantly on desktops that ignore short timeouts.
+            n.set_timeout(0)  # 0 = persistent on most desktops
+            try:
+                from gi.repository import Notify as _N, GLib as _G  # type: ignore
+                n.set_urgency(_N.Urgency.CRITICAL)
+                loop = _G.MainLoop()
+                n.connect("closed", lambda *args: loop.quit())
+                n.show()
+                print("Test notification sent. Close or dismiss it to return.")
+                loop.run()
+            except Exception:
+                # Fallback: show once without a main loop
+                n.show()
+                print("Test notification sent (fallback mode). It may auto-hide based on desktop settings.")
             return
         
         # Check if updates are snoozed FIRST - skip all notifications if snoozed
