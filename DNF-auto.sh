@@ -1561,9 +1561,9 @@ run_debug_menu_only() {
         echo "  4) Create diagnostics bundle tarball"
         echo "  5) Open diagnostics logs folder"
         echo "  6) Run notification self-test"
-        echo "  7) Exit menu"
+        echo "  7) Exit menu (7 / E / Q)"
         echo ""
-        read -p "Select an option [1-7]: " -r choice
+        read -p "Select an option [1-7, E, Q]: " -r choice
 
         case "${choice}" in
             1)
@@ -1582,7 +1582,6 @@ run_debug_menu_only() {
                 ;;
             2)
                 log_info "[debug-menu] Viewing live diagnostics logs"
-                echo "Following diagnostics logs. Press Ctrl+C to stop."
 
                 # Prefer aggregated diagnostics log when follower is running.
                 local diag_dir today diag_file
@@ -1592,9 +1591,18 @@ run_debug_menu_only() {
 
                 if [ -f "${diag_file}" ] && systemctl is-active --quiet dnf-auto-diag-logs.service 2>/dev/null; then
                     echo "- Diagnostics log (aggregated): ${diag_file}"
-                    tail -n 50 -F "${diag_file}"
-                    # When tail exits (Ctrl+C), break the whole menu loop.
-                    break
+                    echo "Press E or Enter to stop viewing logs and return to the menu."
+                    tail -n 50 -F "${diag_file}" &
+                    local tail_pid=$!
+                    # Wait for user to press a single key (E or Enter) instead
+                    # of using Ctrl+C, so we can return cleanly to the debug
+                    # menu without killing the whole helper.
+                    local key
+                    read -r -n1 key
+                    kill "${tail_pid}" 2>/dev/null || true
+                    wait "${tail_pid}" 2>/dev/null || true
+                    # After stopping the tail, re-render the menu.
+                    continue
                 fi
 
                 # Fallback: replicate --live-logs behaviour when no aggregated diag file.
@@ -1630,10 +1638,16 @@ run_debug_menu_only() {
                     continue
                 fi
 
+                echo "Press E or Enter to stop viewing logs and return to the menu."
                 # Show a bit of history, then follow; -F keeps following across rotations.
                 # shellcheck disable=SC2068
-                tail -n 50 -F ${LOG_FILES_TO_FOLLOW[@]}
-                break
+                tail -n 50 -F ${LOG_FILES_TO_FOLLOW[@]} &
+                local tail_pid=$!
+                local key
+                read -r -n1 key
+                kill "${tail_pid}" 2>/dev/null || true
+                wait "${tail_pid}" 2>/dev/null || true
+                continue
                 ;;
             3)
                 log_info "[debug-menu] Capturing diagnostics snapshot"
@@ -1678,7 +1692,7 @@ run_debug_menu_only() {
                         /usr/bin/python3 "${NOTIFY_SCRIPT_PATH}" --test-notify || true
                 fi
                 ;;
-            7|q|Q)
+            7|q|Q|e|E)
                 log_info "[debug-menu] Exiting debug/diagnostics menu"
                 break
                 ;;
